@@ -71,7 +71,7 @@ def test_cantilever_moment_direction():
 def test_input_errors_are_messages():
     """잘못된 입력은 예외가 아니라 ok=false + 한국어 메시지로 돌아와야 한다."""
     out = call({"L": 6, "supports": [{"kind": "pin", "x": 0}], "loads": []})
-    assert out["ok"] is False and "정정보" in out["error"]
+    assert out["ok"] is False and "지원하는 지점 구성" in out["error"]
     out = call({**SIMPLE_UDL, "L": ""})
     assert out["ok"] is False and "비어" in out["error"]
     assert json.loads(bridge.run("이건 JSON 아님"))["ok"] is False
@@ -92,3 +92,18 @@ def test_deflection_output():
 def test_no_stiffness_no_deflection():
     out = call({**SIMPLE_UDL, "E": "", "I": ""})
     assert out["deflection"] is None and "delta" not in out["diagram"]
+
+
+def test_app_js_loads_every_core_module():
+    """
+    app.js 의 CORE_FILES 목록에 core/*.py 가 모두 있어야 Pyodide 에서 import 된다.
+    (Phase 5B 에서 macaulay.py, compat.py 를 빠뜨려 브라우저에서만 실패한 적이 있다)
+    """
+    import re
+
+    root = Path(__file__).resolve().parent.parent
+    app_js = (root / "web" / "app.js").read_text(encoding="utf-8")
+    block = re.search(r"const CORE_FILES = \[(.*?)\];", app_js, re.S).group(1)
+    listed = set(re.findall(r'"([\w.]+\.py)"', block))
+    on_disk = {p.name for p in (root / "core").glob("*.py")} - {"demo.py"}
+    assert on_disk - listed == set(), f"app.js CORE_FILES 에 빠진 파일: {on_disk - listed}"

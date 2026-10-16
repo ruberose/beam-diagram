@@ -118,7 +118,7 @@ def shear_roots(seg: Segment, x: sp.Symbol) -> list[sp.Expr]:
             continue
         rv = float(r)
         if float(seg.x_start) + _ZERO_TOL < rv < float(seg.x_end) - _ZERO_TOL:
-            roots.append(sp.nsimplify(sp.simplify(r)))
+            roots.append(sp.simplify(r))
     return sorted(roots, key=float)
 
 
@@ -268,7 +268,7 @@ def slope_roots(seg: Segment, x: sp.Symbol) -> list[sp.Expr]:
         if not (a + _ZERO_TOL < rv < b - _ZERO_TOL):
             continue
         if poly.degree() <= 2:
-            roots.append(sp.nsimplify(sp.simplify(r)))  # √ 형태 그대로
+            roots.append(sp.simplify(r))  # √ 형태 그대로
         else:
             roots.append(sp.Float(r.evalf(_ROOT_DIGITS), _ROOT_DIGITS))
     return sorted(set(roots), key=float)

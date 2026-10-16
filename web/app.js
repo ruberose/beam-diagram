@@ -34,9 +34,12 @@
 // 설정값
 // ─────────────────────────────────────────────────────────────
 const PYODIDE_URL = "https://cdn.jsdelivr.net/pyodide/v0.27.2/full/";
+// core/ 에 .py 파일을 새로 만들면 여기에도 꼭 추가한다 (tests/test_bridge.py 가 빠진 파일을 잡아낸다).
+// demo.py 는 콘솔 전용이라 넣지 않는다.
 const CORE_FILES = [
   "__init__.py", "model.py", "sign.py", "solver.py",
   "piecewise.py", "extremes.py", "steps.py",
+  "macaulay.py", "compat.py",
 ];
 const STORAGE_KEY = "beam-diagram:last-input:v1";
 
@@ -248,16 +251,28 @@ function loadSavedInput() {
   return null;
 }
 
-/** 지점 프리셋 버튼: 현재 L 기준으로 단순보(핀 0 + 롤러 L) 또는 캔틸레버(고정 0) */
+/**
+ * 지점 프리셋 버튼: 현재 경간 L 기준으로 지점 줄을 다시 만든다.
+ *   simple      단순보      핀 0 + 롤러 L
+ *   cantilever  캔틸레버    고정 0
+ *   propped     고정-핀     고정 0 + 롤러 L          (1차 부정정)
+ *   fixed_fixed 양단 고정   고정 0 + 고정 L          (2차 부정정)
+ *   span2/3     연속보      핀 0 + 롤러를 등간격으로 (2경간: 1차, 3경간: 2차 부정정)
+ * 연속보 지점 위치는 소수 4자리로 반올림한다 (예: L=10, 3경간 → 3.3333, 6.6667).
+ */
 function applyPreset(kind) {
   const L = Number($("#span").value) || 0;
+  const round4 = (v) => Math.round(v * 1e4) / 1e4;
+  const PRESETS = {
+    simple: [["pin", 0], ["roller", L]],
+    cantilever: [["fixed", 0]],
+    propped: [["fixed", 0], ["roller", L]],
+    fixed_fixed: [["fixed", 0], ["fixed", L]],
+    span2: [["pin", 0], ["roller", round4(L / 2)], ["roller", L]],
+    span3: [["pin", 0], ["roller", round4(L / 3)], ["roller", round4((2 * L) / 3)], ["roller", L]],
+  };
   $("#supports").replaceChildren();
-  if (kind === "simple") {
-    addSupportRow({ kind: "pin", x: 0 });
-    addSupportRow({ kind: "roller", x: L });
-  } else {
-    addSupportRow({ kind: "fixed", x: 0 });
-  }
+  for (const [k, x] of PRESETS[kind]) addSupportRow({ kind: k, x });
   saveInput();
 }
 

@@ -147,6 +147,7 @@ button {
 }
 button:hover { background: #f0f2f5; }
 button.small { font-size: 13px; padding: 4px 8px; }
+.preset-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 button.add { margin-top: 8px; width: 100%; color: var(--accent); }
 button.del { color: var(--danger); padding: 4px 9px; }
 button.primary {

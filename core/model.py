@@ -168,9 +168,14 @@ class Beam:
         EI = E × I × 10⁻⁹   (1 MPa = 10³ kN/m², 1 mm⁴ = 10⁻¹² m⁴)
     로 고정 환산한다 (solver.stiffness_EI).
 
-    Phase 1 지원 범위 (정정보만):
-        - 단순보/내민보 : 핀·롤러 2개 (위치는 보 안 어디든)
-        - 캔틸레버      : 고정단 1개 (보 왼쪽 끝 또는 오른쪽 끝)
+    지원 범위 (kind() 가 돌려주는 이름):
+        정정보 (Phase 1)
+        - "simple"      단순보/내민보 : 핀·롤러 2개 (위치는 보 안 어디든)
+        - "cantilever"  캔틸레버      : 고정단 1개 (보 왼쪽 끝 또는 오른쪽 끝)
+        부정정보 (Phase 5B)
+        - "propped"     고정-핀(롤러) : 고정단 1개(보 끝) + 핀·롤러 1개   → 1차 부정정
+        - "fixed_fixed" 양단 고정     : 고정단 2개 (x=0, x=L)            → 2차 부정정 (연직하중만이면)
+        - "continuous"  연속보        : 핀·롤러 3~4개 (2~3경간)           → 1~2차 부정정
 
     예:
         beam = Beam(
@@ -195,18 +200,33 @@ class Beam:
         """E 와 I 가 모두 입력되어 처짐을 계산할 수 있으면 True."""
         return self.E is not None and self.I is not None
 
-    def kind(self) -> Literal["simple", "cantilever"]:
+    def kind(self) -> Literal["simple", "cantilever", "propped", "fixed_fixed", "continuous"]:
         """
-        보 종류를 돌려준다: 고정단이 있으면 "cantilever", 아니면 "simple"(내민보 포함).
+        보 종류를 돌려준다 (위 docstring 의 지원 범위 참고).
         validate()를 통과한 보에서만 의미가 있다.
         """
-        if any(s.kind == "fixed" for s in self.supports):
-            return "cantilever"
-        return "simple"
+        n_fixed = sum(1 for s in self.supports if s.kind == "fixed")
+        n_hinged = len(self.supports) - n_fixed
+        if n_fixed == 2:
+            return "fixed_fixed"
+        if n_fixed == 1:
+            return "propped" if n_hinged == 1 else "cantilever"
+        return "simple" if n_hinged == 2 else "continuous"
+
+    def is_determinate(self) -> bool:
+        """정정보(평형식 2개로 반력이 풀림)이면 True. 부정정보는 적합조건이 더 필요하다."""
+        return self.kind() in ("simple", "cantilever")
+
+    def unknown_count(self) -> int:
+        """
+        미지 반력 개수: 핀·롤러는 R 하나, 고정단은 R 과 M 두 개.
+        부정정 차수 = 미지 반력 수 − 평형식 수(2).
+        """
+        return sum(2 if s.kind == "fixed" else 1 for s in self.supports)
 
     def validate(self) -> list[str]:
         """
-        입력이 Phase 1 범위에서 계산 가능한지 검사한다.
+        입력이 지원 범위(정정보 + Phase 5B 부정정보)에서 계산 가능한지 검사한다.
 
         반환값:
             경고 메시지 목록 (계산은 가능하지만 사용자에게 알릴 것).
@@ -220,9 +240,9 @@ class Beam:
         if self.L <= 0:
             raise ValueError("경간 L은 0보다 커야 합니다.")
 
-        # ── 2. 지점 구성: 정정보(미지 반력 2개)인지 확인 ──
-        #   연직 평형식은 ΣF_y = 0, ΣM = 0 두 개뿐이므로
-        #   미지수(반력)가 정확히 2개여야 손계산(정정)으로 풀린다.
+        # ── 2. 지점 구성 ──
+        #   연직 평형식은 ΣF_y = 0, ΣM = 0 두 개뿐이다.
+        #   미지 반력이 2개면 정정보, 그보다 많으면 부정정보(적합조건으로 푼다, Phase 5B).
         fixed = [s for s in self.supports if s.kind == "fixed"]
         hinged = [s for s in self.supports if s.kind in ("pin", "roller")]
 
@@ -232,24 +252,32 @@ class Beam:
             if not (0 <= s.x <= self.L):
                 raise ValueError(f"지점 위치 x={s.x:g} m 가 보 범위(0 ~ {self.L:g} m) 밖입니다.")
 
-        if len(fixed) == 1 and len(hinged) == 0:
-            # 캔틸레버: 고정단 하나 (반력 R, M → 미지수 2개)
-            if fixed[0].x not in (0, self.L):
+        positions = [s.x for s in self.supports]
+        if len(set(positions)) != len(positions):  # set 은 중복을 없애므로 길이가 줄면 중복이 있다
+            raise ValueError("같은 위치에 지점이 두 개 이상 있습니다. 서로 다른 위치에 두세요.")
+        for s in fixed:
+            if s.x not in (0, self.L):
                 raise ValueError("고정단은 보의 왼쪽 끝(x=0) 또는 오른쪽 끝(x=L)에 있어야 합니다.")
-        elif len(fixed) == 0 and len(hinged) == 2:
-            # 단순보/내민보: 핀·롤러 둘 (반력 R_A, R_B → 미지수 2개)
-            if hinged[0].x == hinged[1].x:
-                raise ValueError("두 지점의 위치가 같습니다. 서로 다른 위치에 두세요.")
-            kinds = sorted(s.kind for s in hinged)
-            if kinds != ["pin", "roller"]:
-                # 연직하중만 다루므로 계산 결과(연직 반력)는 같다. 수평 안정성만 알린다.
-                warnings.append(
-                    "지점이 핀+롤러 조합이 아닙니다. 연직하중만 계산하므로 결과는 같지만, "
-                    "실제 구조에서는 수평 방향 구속을 확인하세요."
-                )
-        else:
+
+        supported = (
+            (len(fixed) == 0 and 2 <= len(hinged) <= 4)      # 단순보·내민보, 2~3경간 연속보
+            or (len(fixed) == 1 and len(hinged) <= 1)        # 캔틸레버, 고정-핀(롤러)
+            or (len(fixed) == 2 and len(hinged) == 0)        # 양단 고정
+        )
+        if not supported:
             raise ValueError(
-                "Phase 1에서는 정정보만 지원합니다: 핀·롤러 2개(단순보/내민보) 또는 고정단 1개(캔틸레버)."
+                "지원하는 지점 구성: 핀·롤러 2개(단순보·내민보), 핀·롤러 3~4개(2~3경간 연속보), "
+                "고정단 1개(캔틸레버), 고정단 1개 + 핀·롤러 1개(고정-핀), 고정단 2개(양단 고정)."
+            )
+
+        # 수평 방향 안정: 핀이나 고정단이 하나도 없으면(롤러만) 보가 옆으로 미끄러진다.
+        if not any(s.kind in ("pin", "fixed") for s in self.supports):
+            raise ValueError("롤러만으로는 수평 방향으로 불안정합니다. 지점 하나를 핀으로 바꾸세요.")
+        if len(fixed) == 0 and len(hinged) == 2 and all(s.kind == "pin" for s in hinged):
+            # 연직하중만 다루므로 계산 결과(연직 반력)는 같다. 수평 구속만 알린다.
+            warnings.append(
+                "지점이 핀+핀 조합입니다. 연직하중만 계산하므로 결과는 같지만, "
+                "실제 구조에서는 수평 방향 구속(온도 변화 등)을 확인하세요."
             )
 
         # ── 3. 하중 위치 ──

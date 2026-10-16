@@ -5,6 +5,7 @@ steps.py — 풀이 과정(손계산 순서)을 LaTeX 문자열 목록으로 만
     구조검토서 손계산과 같은 순서로 풀이 과정을 만든다.
         1. 하중 정리      : 분포하중 → 합력 W 와 작용점 x̄
         2. 반력 계산      : ΣM_A = 0 → R_B,  ΣF_y = 0 → R_A  (캔틸레버는 ΣF_y, ΣM)
+                            부정정보는 변형일치법 (Phase 5B, compat.py)
         3. 구간별 V, M    : 단면 왼쪽 자유물체도(FBD)로 식을 세운다
         4. 최대값         : V = 0 위치 → M 대입, 경계값 후보 비교
         5. 처짐           : 맥컬리법 (E, I 를 넣었을 때만, Phase 5A)
@@ -18,7 +19,8 @@ steps.py — 풀이 과정(손계산 순서)을 LaTeX 문자열 목록으로 만
 [관계]
     - 이 파일을 부르는 곳: demo.py, tests/test_steps.py, (나중에) web/bridge.py
     - 이 파일이 부르는 곳: model.py, solver.py(SolverResult, exact),
-                          piecewise.py(Segment), extremes.py(Extremes), sympy
+                          piecewise.py(Segment), extremes.py(Extremes),
+                          macaulay.py(맥컬리법), compat.py(변형일치법), sympy
 
 [출력 형식]
     Step 목록. Step 하나 = 제목 + StepLine 목록.
@@ -39,10 +41,12 @@ from dataclasses import dataclass, field
 
 import sympy as sp
 
+from core.compat import solve_compat
 from core.extremes import DeflectionExtremes, Extremes, ValueAt
+from core.macaulay import SupportPoint, boundary_conditions, integrate_sf, moment_expr
 from core.model import LinearLoad, MomentLoad, PointLoad, UniformLoad
 from core.piecewise import Segment, singularity_to_poly
-from core.solver import SolverResult, exact, load_terms
+from core.solver import SolverResult, exact
 
 DIGITS = 2  # 결과값 표시 소수 자리 (지시서 5장: 기본 2자리)
 
@@ -424,15 +428,19 @@ def _moment_terms(summary: LoadSummary, x_ref: sp.Expr) -> tuple[list[tuple[int,
     return nums, total
 
 
-def _reactions_simple(result: SolverResult, summary: LoadSummary) -> tuple[dict, list[StepLine]]:
+def _reactions_simple(primary: list, summary: LoadSummary) -> tuple[dict, list[StepLine]]:
     """
-    단순보·내민보 반력.
+    지점 2개(A, B) 보의 반력 — 단순보·내민보, 그리고 연속보의 이완 구조.
 
     ΣM_A = 0 (시계 +):  Σ F_i·a_i + Σ M_j − R_B·ℓ_AB = 0  →  R_B = (Σ F_i·a_i + Σ M_j) / ℓ_AB
     ΣF_y = 0 (위 +)  :  R_A + R_B − Σ F_i = 0           →  R_A = Σ F_i − R_B
     a_i : 지점 A 에서 하중 i 까지 거리 (오른쪽 +)
+
+    primary: 지점 2개 (label, x 속성이 있는 객체). 이름은 지점 이름을 그대로 쓴다
+             (연속보 이완 구조면 A 와 D 처럼).
     """
-    A, B = result.reactions[0], result.reactions[1]
+    A, B = primary[0], primary[1]
+    a, b = A.label, B.label
     lAB = B.x - A.x
     lines: list[StepLine] = []
 
@@ -440,12 +448,12 @@ def _reactions_simple(result: SolverResult, summary: LoadSummary) -> tuple[dict,
     nums, Msum = _moment_terms(summary, A.x)
     R_B = Msum / lAB
     lines.append(StepLine(
-        r"\sum M_A = \sum F_i\,a_i + \sum M_j - R_B\,\ell_{AB} = 0",
-        f"ΣM_A = 0 (A점 기준, 시계 +; a_i = A점에서 하중까지 거리, ℓ_AB = {num(lAB)} m)",
+        rf"\sum M_{a} = \sum F_i\,a_i + \sum M_j - R_{b}\,\ell_{{{a}{b}}} = 0",
+        f"ΣM_{a} = 0 ({a}점 기준, 시계 +; a_i = {a}점에서 하중까지 거리, ℓ_{a}{b} = {num(lAB)} m)",
     ))
-    lines.append(StepLine(rf"{join_terms(nums)} - R_B \times {num(lAB)} = 0"))
+    lines.append(StepLine(rf"{join_terms(nums)} - R_{b} \times {num(lAB)} = 0"))
     lines.append(StepLine(
-        rf"R_B = \frac{{{num(Msum)}}}{{{num(lAB)}}} = {num(R_B)}{KN}"
+        rf"R_{b} = \frac{{{num(Msum)}}}{{{num(lAB)}}} = {num(R_B)}{KN}"
         + (r"\ (\downarrow)" if R_B < 0 else ""),
     ))
 
@@ -453,46 +461,140 @@ def _reactions_simple(result: SolverResult, summary: LoadSummary) -> tuple[dict,
     Fsum = sum((f.F for f in summary.forces), sp.Integer(0))
     R_A = Fsum - R_B
     f_nums = join_terms([(1 if f.F >= 0 else -1, num(abs(f.F))) for f in summary.forces])
-    lines.append(StepLine(r"R_A + R_B - \sum F_i = 0", "ΣF_y = 0 (위 +)"))
-    lines.append(StepLine(rf"R_A + {paren(R_B)} - ({f_nums}) = 0"))
+    lines.append(StepLine(rf"R_{a} + R_{b} - \sum F_i = 0", "ΣF_y = 0 (위 +)"))
+    lines.append(StepLine(rf"R_{a} + {paren(R_B)} - ({f_nums}) = 0"))
     lines.append(StepLine(
-        rf"R_A = {num(Fsum)} - {paren(R_B)} = {num(R_A)}{KN}"
+        rf"R_{a} = {num(Fsum)} - {paren(R_B)} = {num(R_A)}{KN}"
         + (r"\ (\downarrow)" if R_A < 0 else ""),
     ))
-    return {A.label: (R_A, None), B.label: (R_B, None)}, lines
+    return {a: (R_A, None), b: (R_B, None)}, lines
 
 
-def _reactions_cantilever(result: SolverResult, summary: LoadSummary) -> tuple[dict, list[StepLine]]:
+def _reactions_cantilever(primary: list, summary: LoadSummary) -> tuple[dict, list[StepLine]]:
     """
-    캔틸레버 반력 (고정단 A).
+    고정단 하나(A)의 반력 — 캔틸레버, 그리고 고정-핀·양단 고정의 이완 구조.
 
     ΣF_y = 0 (위 +)  :  R_A − Σ F_i = 0                →  R_A = Σ F_i
     ΣM_A = 0 (시계 +):  M_A + Σ F_i·a_i + Σ M_j = 0     →  M_A = −(Σ F_i·a_i + Σ M_j)
     M_A 는 고정단이 보에 가하는 반력 모멘트 (시계 +). 회전 방향도 함께 표시한다.
     """
-    A = result.reactions[0]
+    A = primary[0]
+    a = A.label
     lines: list[StepLine] = []
 
     Fsum = sum((f.F for f in summary.forces), sp.Integer(0))
     f_nums = join_terms([(1 if f.F >= 0 else -1, num(abs(f.F))) for f in summary.forces])
-    lines.append(StepLine(r"R_A - \sum F_i = 0", "ΣF_y = 0 (위 +)"))
+    lines.append(StepLine(rf"R_{a} - \sum F_i = 0", "ΣF_y = 0 (위 +)"))
     if len(summary.forces) > 1:
-        lines.append(StepLine(rf"R_A = {f_nums} = {num(Fsum)}{KN}"))
+        lines.append(StepLine(rf"R_{a} = {f_nums} = {num(Fsum)}{KN}"))
     else:  # 하중이 하나뿐이면 '18.00 = 18.00' 처럼 같은 값이 두 번 나오지 않게
-        lines.append(StepLine(rf"R_A = {num(Fsum)}{KN}"))
+        lines.append(StepLine(rf"R_{a} = {num(Fsum)}{KN}"))
 
     nums, Msum = _moment_terms(summary, A.x)
     M_A = -Msum
     lines.append(StepLine(
-        r"\sum M_A = M_A + \sum F_i\,a_i + \sum M_j = 0",
-        "ΣM_A = 0 (고정단 기준, 시계 +; a_i = 고정단에서 하중까지 거리, 오른쪽 +)",
+        rf"\sum M_{a} = M_{a} + \sum F_i\,a_i + \sum M_j = 0",
+        f"ΣM_{a} = 0 (고정단 기준, 시계 +; a_i = 고정단에서 하중까지 거리, 오른쪽 +)",
     ))
-    lines.append(StepLine(rf"M_A + ({join_terms(nums)}) = 0"))
+    lines.append(StepLine(rf"M_{a} + ({join_terms(nums)}) = 0"))
     direction = moment_direction(M_A)
     lines.append(StepLine(
-        rf"M_A = -({num(Msum)}) = {num(M_A)}{KNM}" + (rf"\quad {direction}" if direction else "")
+        rf"M_{a} = -({num(Msum)}) = {num(M_A)}{KNM}" + (rf"\quad {direction}" if direction else "")
     ))
-    return {A.label: (Fsum, M_A)}, lines
+    return {a: (Fsum, M_A)}, lines
+
+
+def _matrix(rows: list[list[str]]) -> str:
+    """LaTeX 행렬. 예: [["1","2"],["3","4"]] → \\begin{bmatrix}1 & 2 \\\\ 3 & 4\\end{bmatrix}"""
+    return r"\begin{bmatrix}" + r" \\ ".join(" & ".join(r) for r in rows) + r"\end{bmatrix}"
+
+
+def _reactions_indeterminate(result: SolverResult, summary: LoadSummary) -> tuple[dict, list[StepLine]]:
+    """
+    부정정보 반력 — 변형일치법 (지시서 D5). 계산은 compat.py, 여기서는 풀이 줄을 만든다.
+
+        1. 부정정 차수, 여분력 Xᵢ, 이완 구조
+        2. 적합조건 Δᵢ = Δᵢ₀ + Σ fᵢⱼ Xⱼ = 0
+        3. EI·Δᵢ₀, EI·fᵢⱼ (이완 구조를 맥컬리법으로 풀어 구한 값)
+        4. 연립방정식 → Xᵢ
+        5. 여분력을 하중으로 보고 이완 구조의 평형식 → 나머지 반력
+    """
+    beam = result.beam
+    points = support_points(result)
+    comp = solve_compat(beam, result.x, result.L, points)
+    reds = comp.redundants
+    n = len(reds)
+    lines: list[StepLine] = []
+
+    # ── 1. 부정정 차수와 여분력 ──
+    n_unknown = beam.unknown_count()
+    lines.append(StepLine(
+        "", f"부정정 차수 = 미지 반력 {n_unknown}개 − 평형식 2개(ΣF_y, ΣM) = {n_unknown - 2}차"
+    ))
+    red_desc = ", ".join(
+        f"X{i + 1} = {r.name.replace('{', '').replace('}', '')}"
+        + (" (연직 반력, 위 +)" if r.kind == "force" else " (반력 모멘트, 시계 +)")
+        for i, r in enumerate(reds)
+    )
+    lines.append(StepLine("", f"여분력: {red_desc}"))
+    lines.append(StepLine("", f"이완 구조(정정보): {comp.primary_text}"))
+
+    # ── 2. 적합조건 ──
+    has_moment = any(r.kind == "moment" for r in reds)
+    compat_text = "적합조건: 실제 구조에서 지점은 처지지 않는다 (δ = 0)" + (
+        ", 고정단은 회전하지 않는다 (θ = 0)" if has_moment else ""
+    )
+    for i, r in enumerate(reds):
+        terms = " + ".join(rf"f_{{{i + 1}{j + 1}}}\,X_{j + 1}" for j in range(n))
+        lines.append(StepLine(
+            rf"\Delta_{i + 1} = {r.displacement_name()} = \Delta_{{{i + 1}0}} + {terms} = 0",
+            compat_text if i == 0 else "",  # 설명은 첫 줄에만
+        ))
+
+    # ── 3. 이완 구조의 변위 (EI 를 곱한 값) ──
+    d0_text = r",\quad ".join(rf"EI\,\Delta_{{{i + 1}0}} = {num(v)}" for i, v in enumerate(comp.d0))
+    lines.append(StepLine(
+        d0_text,
+        "실제 하중만 이완 구조에 걸 때의 변위 (맥컬리법, 처짐 아래 +·처짐각 시계 +; EI 는 양변에서 지워짐)",
+    ))
+    f_text = r",\quad ".join(
+        rf"EI\,f_{{{i + 1}{j + 1}}} = {num(comp.F[i][j])}" for i in range(n) for j in range(n)
+    )
+    lines.append(StepLine(f_text, "단위 여분력 Xⱼ = 1 만 걸 때 Δᵢ 위치의 변위 (유연도 계수 fᵢⱼ)"))
+
+    # ── 4. 여분력 풀기 ──
+    if n == 1:
+        lines.append(StepLine(
+            rf"X_1 = -\frac{{\Delta_{{10}}}}{{f_{{11}}}} = -\frac{{{num(comp.d0[0])}}}{{{paren(comp.F[0][0])}}}"
+            rf" = {num(comp.X[0])}"
+        ))
+    else:
+        Fm = _matrix([[num(comp.F[i][j]) for j in range(n)] for i in range(n)])
+        Xv = _matrix([[f"X_{i + 1}"] for i in range(n)])
+        Dv = _matrix([[num(-v)] for v in comp.d0])
+        lines.append(StepLine(rf"{Fm}{Xv} = {Dv}", "연립방정식 (양변에 EI 를 곱한 꼴)"))
+    for r, v in zip(reds, comp.X):
+        unit = KN if r.kind == "force" else KNM
+        extra = ""
+        if r.kind == "moment":
+            direction = moment_direction(v)
+            extra = rf"\quad {direction}" if direction else ""
+        lines.append(StepLine(rf"{r.name} = {num(v)}{unit}{extra}"))
+
+    # ── 5. 나머지 반력: 여분력을 하중으로 보고 이완 구조의 평형 ──
+    lines.append(StepLine("", "나머지 반력: 구한 여분력을 하중으로 보고 이완 구조의 평형식을 세운다"))
+    ext = LoadSummary(list(summary.forces), list(summary.moments), summary.by_load, [])
+    for r, v in zip(reds, comp.X):
+        if r.kind == "force":
+            ext.forces.append(Resultant(r.name, -v, r.x))  # 위 방향 반력 = 아래 하중 −v
+        else:
+            ext.moments.append(AppliedMoment(r.name, v, r.x))
+    if len(comp.primary) == 1:
+        _, eq_lines = _reactions_cantilever(comp.primary, ext)
+    else:
+        _, eq_lines = _reactions_simple(comp.primary, ext)
+    lines.extend(eq_lines)
+    return comp.reactions, lines
 
 
 # ─────────────────────────────────────────────────────────────
@@ -784,9 +886,6 @@ def singularity_latex(expr: sp.Expr) -> str:
 # ─────────────────────────────────────────────────────────────
 # 5단계: 처짐 — 맥컬리법 (Phase 5A, 지시서 D1~D4)
 # ─────────────────────────────────────────────────────────────
-SF = sp.SingularityFunction
-
-
 def sci(value: float) -> str:
     """
     큰 수를 'a × 10ⁿ' LaTeX 로 (단면2차모멘트 표시용).
@@ -805,52 +904,17 @@ def mm(value_m: sp.Expr) -> str:
     return num(float(value_m) * 1000)
 
 
+def support_points(result: SolverResult) -> list[SupportPoint]:
+    """solver 반력 목록 → macaulay.SupportPoint 목록 (이름·종류·위치)."""
+    return [SupportPoint(r.label, r.kind, r.x) for r in result.reactions]
+
+
 def macaulay_moment(result: SolverResult, hand: dict) -> sp.Expr:
     """
     손계산 반력과 하중 목록으로 휨모멘트를 특이함수 식 하나로 직접 만든다.
-
-    구조역학적 의미 (단면 왼쪽 자유물체도를 보 전체에 대해 한 식으로):
-        반력 R (위)            : + R⟨x − a⟩¹
-        반력 모멘트 M_A (시계) : + M_A⟨x − a⟩⁰
-        모멘트 하중 M₀ (시계)  : + M₀⟨x − a⟩⁰
-        하중 세기 q⟨x − a⟩ⁿ (아래): − q⟨x − a⟩ⁿ⁺² / (n+2)!
-            집중하중 (n=−1): −P⟨x − a⟩¹,  등분포 (n=0): −w⟨x − a⟩²/2,  선형 (n=1): −s⟨x − a⟩³/6
+    (규칙은 macaulay.moment_expr 참고: 반력 +R⟨x−a⟩¹, 집중하중 −P⟨x−a⟩¹, 등분포 −w⟨x−a⟩²/2 …)
     """
-    x = result.x
-    M = sp.Integer(0)
-    for r in result.reactions:
-        R, M_r = hand[r.label]
-        M += R * SF(x, r.x, 1)
-        if M_r is not None:
-            M += M_r * SF(x, r.x, 0)
-    for load in result.beam.loads:
-        for kind, value, start, order in load_terms(load, result.L):
-            if kind == "moment":
-                M += value * SF(x, start, 0)
-            else:
-                M -= value * SF(x, start, order + 2) / sp.factorial(order + 2)
-    return M
-
-
-def integrate_sf(expr: sp.Expr) -> sp.Expr:
-    """
-    특이함수 식을 적분한다 (적분상수 없이):  ∫⟨x − a⟩ⁿ dx = ⟨x − a⟩ⁿ⁺¹ / (n + 1)   (n ≥ 0)
-
-    특이함수의 적분은 x < a 에서 0 이 되도록 정의되므로 이 규칙 하나로 보 전체에서 성립한다.
-    그래서 맥컬리법은 구간 수와 관계없이 적분상수가 2개뿐이다.
-    """
-    out = sp.Integer(0)
-    for term in sp.Add.make_args(sp.expand(expr)):
-        if term == 0:
-            continue
-        c, f = term.as_coeff_Mul()
-        if not isinstance(f, SF):
-            raise ValueError(f"특이함수가 아닌 항은 적분할 수 없습니다: {term}")
-        var, a, n = f.args
-        if n < 0:
-            raise ValueError("음의 차수 특이함수는 M(x) 에 나오지 않아야 합니다.")
-        out += c * SF(var, a, n + 1) / (n + 1)
-    return out
+    return moment_expr(result.x, result.L, support_points(result), hand, result.beam.loads)
 
 
 def _deflection_lines(
@@ -894,12 +958,11 @@ def _deflection_lines(
     lines.append(StepLine(rf"EI\,\delta(x) = {singularity_latex(EI_delta_0)} + C_1 x + C_2", "2회 적분"))
 
     # ── (4) 경계조건 → C₁, C₂ ──
-    if beam.kind() == "cantilever":
-        xf = result.reactions[0].x
-        bcs = [("theta", xf), ("delta", xf)]
+    points = support_points(result)
+    bcs = boundary_conditions(points)
+    if bcs[0][0] == "theta":
         bc_text = "경계조건: 고정단의 처짐각 = 0, 처짐 = 0"
     else:
-        bcs = [("delta", r.x) for r in result.reactions]
         bc_text = "경계조건: 두 지점의 처짐 = 0"
     lines.append(StepLine("", bc_text))
     eqs = []
@@ -917,6 +980,25 @@ def _deflection_lines(
     lines.append(StepLine(
         rf"C_1 = {num(c1)}\ \text{{kN}}\cdot\text{{m}}^2,\quad C_2 = {num(c2)}\ \text{{kN}}\cdot\text{{m}}^3"
     ))
+
+    # 부정정보: 경계조건에 쓰지 않은 나머지 구속(지점 δ = 0, 고정단 θ = 0)도 만족하는지 확인.
+    # 반력을 적합조건으로 구했으므로 0 이 나와야 한다 (손계산 검산에 해당).
+    used = {(w, x0) for w, x0 in bcs}
+    EI_delta_full = EI_delta_0 + c1 * x + c2
+    EI_theta_full = EI_theta_0 + c1
+    checks = []
+    for pt in points:
+        conds = [("delta", pt.x)] + ([("theta", pt.x)] if pt.kind == "fixed" else [])
+        for what, x0 in conds:
+            if (what, x0) in used:
+                continue
+            val = (EI_delta_full if what == "delta" else EI_theta_full).subs(x, x0)
+            sym = r"\delta" if what == "delta" else r"\theta"
+            checks.append(rf"EI\,{sym}({num(x0)}) = {num(val)}")
+            if sp.simplify(val) != 0:
+                warnings.append(f"지점 {pt.label} 의 {'처짐' if what == 'delta' else '처짐각'}이 0 이 아닙니다 (적합조건 불일치).")
+    if checks:
+        lines.append(StepLine(r",\quad ".join(checks), "검산: 나머지 지점 구속 (0 이면 적합조건 만족)"))
 
     # ── 검증: 손계산 δ(x) = SymPy δ(x) ? (구간별 다항식으로 비교) ──
     delta_hand = (EI_delta_0 + c1 * x + c2) / EI
@@ -989,11 +1071,17 @@ def build_steps(
     steps.append(Step("loads", "1. 하중 정리", summary.lines))
 
     # ── 2. 반력 계산 (직접 세운 평형식) + SymPy 해와 비교 ──
-    if result.beam.kind() == "cantilever":
-        hand, r_lines = _reactions_cantilever(result, summary)
-    else:
-        hand, r_lines = _reactions_simple(result, summary)
-    steps.append(Step("reactions", "2. 반력 계산", r_lines))
+    kind = result.beam.kind()
+    if kind == "cantilever":
+        hand, r_lines = _reactions_cantilever(support_points(result), summary)
+        r_title = "2. 반력 계산"
+    elif kind == "simple":
+        hand, r_lines = _reactions_simple(support_points(result), summary)
+        r_title = "2. 반력 계산"
+    else:  # 부정정보 (Phase 5B)
+        hand, r_lines = _reactions_indeterminate(result, summary)
+        r_title = "2. 반력 계산 (변형일치법)"
+    steps.append(Step("reactions", r_title, r_lines))
     for r in result.reactions:
         R_h, M_h = hand[r.label]
         if sp.simplify(R_h - r.R) != 0 or (r.M is not None and sp.simplify(M_h - r.M) != 0):

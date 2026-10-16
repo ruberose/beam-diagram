@@ -106,7 +106,11 @@ def exact(value: float | int | str) -> sp.Rational:
     로 저장된다. 문자열 "0.1" 로 바꾼 뒤 Rational 로 만들면 정확히 1/10 이 된다.
 
     예: exact(0.1) → 1/10,  exact(2.5) → 5/2
+
+    이미 SymPy 정확한 수(예: 부정정 여분력 값 75/4)가 들어오면 그대로 돌려준다.
     """
+    if isinstance(value, sp.Basic):
+        return value
     return sp.Rational(str(value))
 
 
@@ -194,7 +198,11 @@ def solve(beam: Beam) -> SolverResult:
     구조역학적 의미:
         미지 반력을 하중처럼 특이함수 항으로 더한 뒤, SymPy 가
         "보 오른쪽 끝 바로 바깥에서 V = 0, M = 0" (= ΣF_y = 0, ΣM = 0) 조건으로
-        반력을 푼다. 정정보이므로 평형식 두 개로 미지수 두 개가 정해진다.
+        반력을 푼다.
+        - 정정보   : 평형식 두 개로 미지수 두 개가 정해진다.
+        - 부정정보 : 미지수가 더 많으므로, 적합조건(지점 처짐 = 0, 고정단 처짐각 = 0)을
+                     함께 써서 푼다 (Phase 5B). 상수 EI 면 반력은 EI 값과 무관하므로
+                     E, I 를 넣지 않아도 EI 를 기호로 두고 풀 수 있다.
 
     예:
         r = solve(Beam(6, [Support("pin",0), Support("roller",6)],
@@ -233,14 +241,11 @@ def solve(beam: Beam) -> SolverResult:
             unknowns.append(M_sym)
         reaction_symbols[label] = (R_sym, M_sym)
 
-    # 경계조건(처짐·처짐각): 정정보는 평형식만으로 풀리지만, SymPy 가 적분상수까지
-    # 함께 풀기 때문에 물리적으로 맞는 조건을 넣어 둔다.
-    if beam.kind() == "cantilever":
-        xf = exact(labeled[0][1].x)
-        b.bc_deflection = [(xf, 0)]
-        b.bc_slope = [(xf, 0)]
-    else:
-        b.bc_deflection = [(exact(s.x), 0) for _, s in labeled]
+    # 경계조건(처짐·처짐각): 모든 지점에서 처짐 = 0, 고정단에서는 처짐각도 = 0.
+    #   정정보는 평형식만으로 반력이 풀리고 이 조건은 적분상수(처짐식)만 정한다.
+    #   부정정보는 이 조건이 바로 "적합조건"이 되어 남는 반력까지 정한다.
+    b.bc_deflection = [(exact(s.x), 0) for _, s in labeled]
+    b.bc_slope = [(exact(s.x), 0) for _, s in labeled if s.kind == "fixed"]
 
     # ── 4단계: 실제 하중 추가 (실무 부호 → SymPy 부호는 sign.py 가 담당) ──
     for load in beam.loads:
@@ -258,10 +263,10 @@ def solve(beam: Beam) -> SolverResult:
     reactions: list[Reaction] = []
     for label, s in labeled:
         R_sym, M_sym = reaction_symbols[label]
-        R = sp.nsimplify(sign.from_sympy_reaction(solved[R_sym]))
+        R = sp.simplify(sign.from_sympy_reaction(solved[R_sym]))
         M = None
         if M_sym is not None:
-            M = sp.nsimplify(sign.from_sympy_reaction_moment(solved[M_sym]))
+            M = sp.simplify(sign.from_sympy_reaction_moment(solved[M_sym]))
         reactions.append(Reaction(label=label, kind=s.kind, x=exact(s.x), R=R, M=M))
 
     # .subs(solved) : 식 안의 R_A, R_B 기호를 구한 값으로 바꿔 넣는다

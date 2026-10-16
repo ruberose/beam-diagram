@@ -256,11 +256,24 @@ def test_superposition(supports):
 # ─────────────────────────────────────────────────────────────
 # 10. 입력 검사
 # ─────────────────────────────────────────────────────────────
-def test_indeterminate_rejected():
-    """Phase 1 은 정정보만: 지점 3개(부정정)는 거부해야 한다."""
-    beam = Beam(6, [Support("pin", 0), Support("roller", 3), Support("roller", 6)], [])
-    with pytest.raises(ValueError):  # with ... : 이 블록 안에서 ValueError 가 나야 통과
-        solve(beam)
+@pytest.mark.parametrize(
+    "supports",
+    [
+        # 지원하지 않는 구성 (Phase 5B 범위 밖)
+        [Support("pin", 0), Support("roller", 2), Support("roller", 3), Support("roller", 4), Support("roller", 6)],
+        [Support("fixed", 3)],                              # 고정단이 보 끝이 아님
+        [Support("fixed", 0), Support("roller", 3), Support("roller", 6)],
+        # 불안정: 롤러만 (수평 방향)
+        [Support("roller", 0), Support("roller", 6)],
+        [Support("roller", 0), Support("roller", 3), Support("roller", 6)],
+        # 같은 위치에 지점 두 개
+        [Support("pin", 0), Support("roller", 0)],
+    ],
+)
+def test_unsupported_supports_rejected(supports):
+    """지원 범위 밖이거나 불안정한 지점 구성은 거부해야 한다 (with pytest.raises: 이 블록에서 ValueError 가 나야 통과)."""
+    with pytest.raises(ValueError):
+        solve(Beam(6, supports, []))
 
 
 def test_load_out_of_range_rejected():

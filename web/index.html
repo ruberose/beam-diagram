@@ -64,14 +64,22 @@
       <section>
         <div class="section-head">
           <h2>지점</h2>
-          <div class="preset-buttons">
-            <button type="button" class="small" data-preset="simple">단순보</button>
-            <button type="button" class="small" data-preset="cantilever">캔틸레버</button>
-          </div>
+        </div>
+        <!-- 지점 프리셋: 현재 경간 L 기준으로 지점 줄을 다시 만든다 (app.js applyPreset) -->
+        <div class="preset-buttons">
+          <button type="button" class="small" data-preset="simple">단순보</button>
+          <button type="button" class="small" data-preset="cantilever">캔틸레버</button>
+          <button type="button" class="small" data-preset="propped">고정-핀</button>
+          <button type="button" class="small" data-preset="fixed_fixed">양단 고정</button>
+          <button type="button" class="small" data-preset="span2">2경간</button>
+          <button type="button" class="small" data-preset="span3">3경간</button>
         </div>
         <div id="supports" class="rows"></div>
         <button type="button" id="add-support" class="add">+ 지점 추가</button>
-        <p class="hint">단순보·내민보: 핀 + 롤러 2개 / 캔틸레버: 고정단 1개 (보 끝)</p>
+        <p class="hint">
+          정정: 핀·롤러 2개(단순보·내민보), 고정단 1개(캔틸레버)<br>
+          부정정: 고정단 + 핀·롤러 1개, 고정단 2개, 핀·롤러 3~4개(연속보) — 핀이나 고정단이 하나는 있어야 함
+        </p>
       </section>
 
       <section>
