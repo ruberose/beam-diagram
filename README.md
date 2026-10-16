@@ -2,7 +2,9 @@
 
 보의 지점·하중을 입력하면 반력, 전단력도(SFD), 휨모멘트도(BMD)와 손계산 형식의 풀이 과정을 보여주는 도구.
 
-> 현재 진행: **Phase 4 (GitHub Pages 배포)**
+> 현재 진행: **Phase 4 (GitHub Pages 배포) 완료**
+>
+> 배포 주소: https://ruberose.github.io/beam-diagram/
 
 ## 웹 화면 실행
 
