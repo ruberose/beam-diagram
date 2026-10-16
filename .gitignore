@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# 지시서 원본 (내용은 CLAUDE.md 와 같음, 로컬에만 보관)
+beam_diagram_지시서.md
