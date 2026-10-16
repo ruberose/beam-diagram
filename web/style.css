@@ -1,0 +1,246 @@
+/*
+  style.css — 화면 모양
+
+  [구성]
+    1. 색·글꼴 변수 (:root)
+    2. 전체 배치: PC 는 왼쪽 입력 / 오른쪽 결과 2단,
+       폭 1000px 미만(아이패드 세로 등)은 위아래로 쌓는다 (@media)
+    3. 입력 줄, 버튼, 표, 풀이 과정, 로딩 표시
+*/
+
+/* ── 1. 변수 ── */
+:root {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --text: #1f2328;
+  --muted: #6b7280;
+  --line: #d9dce1;
+  --accent: #1f6feb;
+  --accent-dark: #1a5fcc;
+  --danger: #c62828;
+  --warn-bg: #fff8e1;
+  --warn-line: #f0c36d;
+  --radius: 8px;
+  font-family: "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 15px;
+}
+
+/* ── 2. 배치 ── */
+.topbar {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding: 12px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.topbar h1 { font-size: 19px; margin: 0; }
+.units { color: var(--muted); font-size: 13px; }
+.engine { margin-left: auto; font-size: 12px; } /* 오른쪽 끝: 엔진 버전·부호 보정 정보 */
+@media (max-width: 600px) { .topbar { flex-wrap: wrap; } .engine { margin-left: 0; } }
+
+.layout {
+  display: grid;
+  grid-template-columns: 360px minmax(0, 1fr); /* minmax(0,…) : 그래프가 넘쳐도 가로 스크롤 안 생기게 */
+  gap: 16px;
+  padding: 16px;
+  align-items: start;
+}
+
+/* 아이패드 세로(768~834px)·휴대폰: 한 줄로 쌓기 */
+@media (max-width: 1000px) {
+  .layout { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+  .input-panel { position: static !important; max-height: none !important; }
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.output { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+
+/* PC 에서는 입력 패널을 화면에 고정해 두고 결과만 스크롤 */
+.input-panel {
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+
+h2 { font-size: 15px; margin: 0 0 8px; }
+section + section { margin-top: 18px; }
+.section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.section-head h2 { margin: 0; }
+
+/* ── 3. 입력 ── */
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field span { font-size: 13px; color: var(--muted); }
+
+input[type="number"], select {
+  font: inherit;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  min-width: 0;
+  width: 100%;
+}
+input[type="number"]:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.rows { display: flex; flex-direction: column; gap: 8px; }
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fafbfc;
+}
+.row select.kind { flex: 0 0 104px; width: 104px; }
+.row .mini {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted);
+  flex: 1 1 90px;
+  min-width: 0;
+}
+.row .mini input { flex: 1; }
+.row .del { margin-left: auto; }
+
+/* 하중 줄: 첫 줄에 [종류 ▾ … ✕], 그 아래 입력칸을 2열로 */
+.load-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.load-row select.kind { grid-column: 1; width: 100%; }
+.load-row .del { grid-column: 2; grid-row: 1; justify-self: end; }
+
+button {
+  font: inherit;
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  touch-action: manipulation; /* 아이패드에서 두 번 탭 확대 방지 */
+}
+button:hover { background: #f0f2f5; }
+button.small { font-size: 13px; padding: 4px 8px; }
+button.add { margin-top: 8px; width: 100%; color: var(--accent); }
+button.del { color: var(--danger); padding: 4px 9px; }
+button.primary {
+  width: 100%;
+  margin-top: 20px;
+  padding: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+button.primary:hover { background: var(--accent-dark); }
+button:disabled { opacity: 0.5; cursor: wait; }
+
+.hint { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+.muted { color: var(--muted); }
+
+.error {
+  margin-top: 12px;
+  padding: 10px;
+  border-radius: 6px;
+  background: #fdecea;
+  color: var(--danger);
+  font-size: 14px;
+}
+.warnings {
+  padding: 10px 14px;
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius);
+  background: var(--warn-bg);
+  font-size: 14px;
+}
+.warnings ul { margin: 4px 0 0; padding-left: 20px; }
+
+.toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+
+/* ── 그래프 ── */
+.plot { width: 100%; height: 720px; }
+@media (max-width: 600px) { .plot { height: 620px; } }
+
+/* ── 주요 결과 표 ── */
+.summary table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.summary th, .summary td {
+  border-bottom: 1px solid var(--line);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.summary th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+.summary td.num, .summary th.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.summary h3 { font-size: 14px; margin: 14px 0 4px; }
+.summary h3:first-child { margin-top: 0; }
+.table-wrap { overflow-x: auto; } /* 좁은 화면에서 표만 가로 스크롤 */
+
+/* ── 풀이 과정 ── */
+.steps details {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  background: #fff;
+}
+.steps summary {
+  cursor: pointer;
+  padding: 9px 12px;
+  font-weight: 600;
+  background: #f7f8fa;
+  border-radius: 6px;
+}
+.steps .step-body { padding: 6px 14px 10px; }
+.steps .note { color: var(--muted); font-size: 13px; margin: 10px 0 2px; }
+.steps .eq { overflow-x: auto; overflow-y: hidden; padding: 2px 0; } /* 긴 수식은 가로 스크롤 */
+.steps .eq .katex-display { margin: 4px 0; text-align: left; }
+.steps .eq .katex-display > .katex { text-align: left; }
+
+/* ── 로딩 표시 ── */
+.loading {
+  position: fixed;
+  inset: 0;
+  background: rgba(244, 245, 247, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.loading[hidden] { display: none; }
+.loading-box { text-align: center; padding: 24px; }
+.loading-sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
+.spinner {
+  width: 36px;
+  height: 36px;
+  margin: 0 auto 14px;
+  border: 4px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }

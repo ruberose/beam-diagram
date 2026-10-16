@@ -1,0 +1,135 @@
+<!doctype html>
+<!--
+  index.html — 보 다이어그램 계산기 화면의 뼈대
+
+  [역할]
+    화면 배치(입력 패널 / 그래프 / 결과 표 / 풀이 과정)만 정의한다.
+    실제 동작(입력 줄 추가, 계산, 그래프·수식 그리기)은 app.js 가 한다.
+
+  [관계]
+    - 불러오는 파일: style.css (모양), app.js (동작)
+    - 외부 라이브러리 (CDN, 버전 고정):
+        Pyodide 0.27.2  : 브라우저 안에서 Python(SymPy) 실행
+        Plotly.js 2.35.2: 보 그림 + SFD + BMD 그래프
+        KaTeX 0.16.11   : LaTeX 수식 표시
+
+  [실행] 파일을 더블클릭(file://)하면 Pyodide 가 동작하지 않는다.
+         프로젝트 루트에서  python -m http.server 8000  후
+         http://localhost:8000/web/  으로 연다.
+-->
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <!-- viewport: 아이패드·휴대폰에서 화면 폭에 맞게 그리라는 설정 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>보 다이어그램 계산기</title>
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <link rel="stylesheet" href="style.css">
+
+  <!-- defer: HTML 을 다 읽은 뒤 순서대로 실행 (화면이 먼저 뜨게) -->
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/pyodide/v0.27.2/full/pyodide.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <!-- ── Pyodide 로딩 중 표시 (첫 로딩에 수 초~수십 초) ── -->
+  <div id="loading" class="loading">
+    <div class="loading-box">
+      <div class="spinner"></div>
+      <div id="loading-text">계산 엔진(Python) 불러오는 중…</div>
+      <div class="loading-sub">처음 한 번은 시간이 걸립니다 (이후 브라우저 캐시 사용)</div>
+    </div>
+  </div>
+
+  <header class="topbar">
+    <h1>보 다이어그램 계산기</h1>
+    <span class="units">단위: m, kN, kN/m, kN·m</span>
+    <span id="engine" class="units engine"></span>
+  </header>
+
+  <main class="layout">
+    <!-- ════════════════ 왼쪽: 입력 ════════════════ -->
+    <aside class="panel input-panel">
+      <section>
+        <h2>경간</h2>
+        <label class="field">
+          <span>보 전체 길이 L (m)</span>
+          <!-- inputmode="decimal": 아이패드에서 숫자 키패드가 뜨게 -->
+          <input id="span" type="number" step="any" min="0" inputmode="decimal">
+        </label>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>지점</h2>
+          <div class="preset-buttons">
+            <button type="button" class="small" data-preset="simple">단순보</button>
+            <button type="button" class="small" data-preset="cantilever">캔틸레버</button>
+          </div>
+        </div>
+        <div id="supports" class="rows"></div>
+        <button type="button" id="add-support" class="add">+ 지점 추가</button>
+        <p class="hint">단순보·내민보: 핀 + 롤러 2개 / 캔틸레버: 고정단 1개 (보 끝)</p>
+      </section>
+
+      <section>
+        <h2>하중</h2>
+        <div id="loads" class="rows"></div>
+        <button type="button" id="add-load" class="add">+ 하중 추가</button>
+        <p class="hint">하중은 아래 방향 +, 모멘트는 시계방향 +</p>
+      </section>
+
+      <button type="button" id="calc" class="primary" disabled>계산</button>
+      <div id="error" class="error" hidden></div>
+    </aside>
+
+    <!-- ════════════════ 오른쪽: 결과 ════════════════ -->
+    <section class="output">
+      <div class="panel">
+        <div class="section-head">
+          <h2>보 형상 · SFD · BMD</h2>
+          <label class="toggle">
+            <input type="checkbox" id="bmd-down" checked>
+            <span>BMD 인장측에 그리기 (양의 M을 아래로)</span>
+          </label>
+        </div>
+        <div id="plot" class="plot"></div>
+      </div>
+
+      <div id="warnings" class="warnings" hidden></div>
+
+      <div class="panel">
+        <h2>주요 결과</h2>
+        <div id="summary" class="summary"><p class="muted">계산 버튼을 누르면 결과가 표시됩니다.</p></div>
+      </div>
+
+      <div class="panel">
+        <div class="section-head">
+          <h2>풀이 과정</h2>
+          <label class="toggle">
+            <input type="checkbox" id="show-singularity">
+            <span>특이함수 식 보기</span>
+          </label>
+        </div>
+        <div id="steps" class="steps"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 지점 한 줄의 틀(template). app.js 가 복사해서 쓴다. 화면에는 직접 보이지 않는다.
+       (하중 줄은 종류마다 입력칸이 달라서 app.js 에서 직접 만든다) -->
+  <template id="support-row">
+    <div class="row">
+      <select class="kind">
+        <option value="pin">핀</option>
+        <option value="roller">롤러</option>
+        <option value="fixed">고정단</option>
+      </select>
+      <label class="mini">x <input class="x" type="number" step="any" inputmode="decimal"></label>
+      <button type="button" class="del" title="삭제">✕</button>
+    </div>
+  </template>
+</body>
+</html>
