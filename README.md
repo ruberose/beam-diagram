@@ -2,7 +2,7 @@
 
 보의 지점·하중을 입력하면 반력, 전단력도(SFD), 휨모멘트도(BMD)와 손계산 형식의 풀이 과정을 보여주는 도구.
 
-> 현재 진행: **Phase 3 (웹 화면) 완료** — 배포(GitHub Pages)는 Phase 4.
+> 현재 진행: **Phase 4 (GitHub Pages 배포)**
 
 ## 웹 화면 실행
 
@@ -20,6 +20,40 @@ python -m http.server 8000
 - 입력은 브라우저(localStorage)에 자동 저장되어 다시 열면 복원된다.
 - 오른쪽 위에 Pyodide 안의 SymPy 버전과 측정된 부호 보정값이 표시된다.
 - 외부 라이브러리(CDN, 버전 고정): Pyodide 0.27.2, Plotly.js 2.35.2, KaTeX 0.16.11
+
+## GitHub Pages 배포
+
+서버 없이 정적 파일만으로 동작하므로 GitHub Pages에 저장소 루트를 그대로 올린다.
+주소: `https://<계정>.github.io/<저장소>/` → 루트 `index.html`이 `web/`으로 이동시킨다.
+
+### 처음 설정 (한 번만)
+
+1. GitHub에 저장소를 만들고 이 폴더를 올린다 (무료 계정은 **공개(public)** 저장소여야 Pages 사용 가능).
+   ```bash
+   gh repo create <저장소> --public --source . --push
+   ```
+2. 저장소 → Settings → Pages → Build and deployment
+   - Source: **Deploy from a branch**
+   - Branch: **main**, 폴더: **/ (root)** → Save
+   - 명령줄로 하려면:
+     ```bash
+     gh api -X POST repos/<계정>/<저장소>/pages -f "source[branch]=main" -f "source[path]=/"
+     ```
+3. 1~2분 뒤 `https://<계정>.github.io/<저장소>/` 접속.
+
+### 이후 업데이트
+
+`main` 브랜치에 push하면 자동으로 다시 배포된다 (1~2분).
+
+```bash
+git push
+```
+
+### 주의
+
+- 루트의 `.nojekyll` 파일을 지우지 말 것. GitHub Pages는 기본으로 Jekyll을 거치는데,
+  Jekyll은 `_`로 시작하는 파일을 빼버려서 `core/__init__.py`가 배포되지 않는다.
+- 배포본에서도 브라우저 캐시 때문에 옛 화면이 보이면 강력 새로고침(Ctrl+F5, 아이패드는 탭 닫고 다시 열기).
 
 ## 엔진만 실행 (콘솔·테스트)
 

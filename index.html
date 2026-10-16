@@ -1,0 +1,22 @@
+<!doctype html>
+<!--
+  index.html (프로젝트 루트) — web/ 으로 보내는 안내 페이지
+
+  [역할]
+    GitHub Pages 주소(https://<계정>.github.io/<저장소>/)로 들어오면
+    실제 화면이 있는 web/ 폴더로 바로 이동시킨다.
+    web/app.js 가 ../core/*.py 를 불러오므로, 사이트는 루트 전체를 배포하고
+    화면은 web/ 에서 연다.
+-->
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>보 다이어그램 계산기</title>
+  <!-- 0초 뒤 web/ 으로 이동 (자바스크립트가 꺼져 있어도 동작) -->
+  <meta http-equiv="refresh" content="0; url=web/">
+</head>
+<body>
+  <p><a href="web/">보 다이어그램 계산기 열기</a></p>
+</body>
+</html>
