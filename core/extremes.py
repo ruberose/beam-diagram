@@ -212,3 +212,111 @@ def find_extremes(segments: list[Segment], x: sp.Symbol) -> Extremes:
         V_min=V_min,
         zero_shear=zero_shear,
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# 처짐 최대값 (Phase 5A)
+# ─────────────────────────────────────────────────────────────
+# 처짐 최대 위치(θ = 0)는 3차 이상 방정식의 해라 √ 로 깔끔하게 안 나올 수 있다.
+# 그때는 SymPy 의 정확한 근(CRootOf)을 이 자릿수로 수치화해서 쓴다.
+# (상대오차 1e-9 기준보다 훨씬 정밀)
+_ROOT_DIGITS = 40
+
+
+@dataclass
+class DeflectionExtremes:
+    """
+    find_deflection_extremes() 결과.
+
+    속성:
+        delta_down : 최대 처짐 (아래, δ > 0 중 가장 큰 값) — 없으면 None
+        delta_up   : 최대 솟음 (위, δ < 0 중 가장 작은 값) — 없으면 None
+        delta_abs  : |δ| 최대 (부호 포함 값)
+        zero_slope : θ = 0 위치들 (value 는 그 위치의 δ)
+        n          : 허용처짐 L/n 의 n
+        limit      : 허용처짐 L/n [m]
+        ok         : |δ|max ≤ L/n 이면 True
+    """
+
+    delta_down: ValueAt | None
+    delta_up: ValueAt | None
+    delta_abs: ValueAt
+    zero_slope: list[ValueAt]
+    n: sp.Expr
+    limit: sp.Expr
+    ok: bool
+
+
+def slope_roots(seg: Segment, x: sp.Symbol) -> list[sp.Expr]:
+    """
+    구간 안(경계 제외)에서 θ(x) = 0 인 x 를 구한다.
+
+    구조역학적 의미:
+        θ = dδ/dx = 0 → 처짐이 극대·극소. 단순보 등분포면 x = L/2.
+    2차식까지는 √ 가 들어간 정확한 값, 3차 이상은 정확한 근을 40자리로 수치화한 값.
+
+    [문법] sp.Poly(식, x).real_roots() : 다항식의 실근을 정확하게(CRootOf 포함) 모두 구한다.
+    """
+    theta = sp.expand(seg.theta)
+    if theta == 0:
+        return []  # 구간 전체에서 θ ≡ 0 (예: 하중 없는 캔틸레버 구간은 아님, 거의 없음)
+    poly = sp.Poly(theta, x)
+    roots: list[sp.Expr] = []
+    a, b = float(seg.x_start), float(seg.x_end)
+    for r in poly.real_roots():
+        rv = float(r)
+        if not (a + _ZERO_TOL < rv < b - _ZERO_TOL):
+            continue
+        if poly.degree() <= 2:
+            roots.append(sp.nsimplify(sp.simplify(r)))  # √ 형태 그대로
+        else:
+            roots.append(sp.Float(r.evalf(_ROOT_DIGITS), _ROOT_DIGITS))
+    return sorted(set(roots), key=float)
+
+
+def find_deflection_extremes(segments: list[Segment], x: sp.Symbol, L: sp.Expr, n: sp.Expr) -> DeflectionExtremes:
+    """
+    처짐 최대·최소와 허용처짐 판정.
+
+    입력:
+        segments : theta, delta 가 들어 있는 구간 목록 (E, I 입력 필수)
+        x        : 위치 변수
+        L        : 보 전체 길이 [m] (허용처짐 기준 길이, 지시서 D4)
+        n        : 허용처짐 L/n 의 n
+    출력:
+        DeflectionExtremes
+
+    후보: 각 구간 양 끝(지점·하중점·자유단) + 구간 안의 θ = 0 위치.
+
+    예 (단순보 L=6, w=10, EI=24600):
+        delta_down = 5wL⁴/384EI = 0.00686 m at x = 3,  L/360 = 0.01667 m → ok
+    """
+    cands: list[ValueAt] = []
+    zero_slope: list[ValueAt] = []
+    for seg in segments:
+        for xv in (seg.x_start, seg.x_end):
+            cands.append(ValueAt(seg.delta.subs(x, xv), xv))
+        for r in slope_roots(seg, x):
+            value = seg.delta.subs(x, r)
+            if not r.is_Float:
+                value = sp.simplify(value)  # √ 가 들어간 정확한 값은 정리해서 보관
+            v = ValueAt(value, r)
+            cands.append(v)
+            zero_slope.append(v)
+
+    downs = [c for c in cands if float(c.value) > _ZERO_TOL]
+    ups = [c for c in cands if float(c.value) < -_ZERO_TOL]
+    delta_down = _pick(downs, lambda c: float(c.value)) if downs else None
+    delta_up = _pick(ups, lambda c: -float(c.value)) if ups else None
+    delta_abs = _pick(cands, lambda c: abs(float(c.value)))
+
+    limit = L / n
+    return DeflectionExtremes(
+        delta_down=delta_down,
+        delta_up=delta_up,
+        delta_abs=delta_abs,
+        zero_slope=zero_slope,
+        n=n,
+        limit=limit,
+        ok=abs(float(delta_abs.value)) <= float(limit),
+    )

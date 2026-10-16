@@ -160,6 +160,13 @@ class Beam:
         L        : 보 전체 길이 [m] (내민보라면 돌출부 포함 전체 길이)
         supports : Support 목록
         loads    : 하중 목록 (PointLoad / UniformLoad / LinearLoad / MomentLoad)
+        E        : 탄성계수 [MPa] (선택 — E, I 를 모두 넣어야 처짐을 계산한다)
+        I        : 단면2차모멘트 [mm⁴] (선택)
+        defl_n   : 허용처짐 L/n 의 n (기본 360)
+
+    처짐 계산은 EI [kN·m²] 를 쓴다. 실무 단위 E [MPa], I [mm⁴] 로 받아서
+        EI = E × I × 10⁻⁹   (1 MPa = 10³ kN/m², 1 mm⁴ = 10⁻¹² m⁴)
+    로 고정 환산한다 (solver.stiffness_EI).
 
     Phase 1 지원 범위 (정정보만):
         - 단순보/내민보 : 핀·롤러 2개 (위치는 보 안 어디든)
@@ -180,6 +187,13 @@ class Beam:
     L: float
     supports: list[Support] = field(default_factory=list)
     loads: list[Load] = field(default_factory=list)
+    E: float | None = None       # [MPa]  (float | None : 실수 또는 None(값 없음))
+    I: float | None = None       # [mm⁴]
+    defl_n: float = 360.0        # 허용처짐 L/n
+
+    def has_stiffness(self) -> bool:
+        """E 와 I 가 모두 입력되어 처짐을 계산할 수 있으면 True."""
+        return self.E is not None and self.I is not None
 
     def kind(self) -> Literal["simple", "cantilever"]:
         """
@@ -241,6 +255,15 @@ class Beam:
         # ── 3. 하중 위치 ──
         if not self.loads:
             warnings.append("하중이 없습니다. 모든 값이 0입니다.")
+
+        # ── 4. 강성 (처짐용, 선택) ──
+        if (self.E is None) != (self.I is None):
+            # != : 둘 중 하나만 None 이면 True → 하나만 입력한 경우
+            raise ValueError("처짐을 계산하려면 E 와 I 를 모두 입력하세요 (처짐이 필요 없으면 둘 다 비우세요).")
+        if self.has_stiffness() and (self.E <= 0 or self.I <= 0):
+            raise ValueError("E 와 I 는 0보다 커야 합니다.")
+        if self.defl_n <= 0:
+            raise ValueError("허용처짐 L/n 의 n 은 0보다 커야 합니다.")
 
         for load in self.loads:
             if isinstance(load, (PointLoad, MomentLoad)):

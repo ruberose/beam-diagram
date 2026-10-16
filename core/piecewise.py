@@ -47,7 +47,10 @@ class Segment:
         x_end   : 구간 끝 [m]
         V       : x_start < x < x_end 에서의 V(x) [kN]  (일반 다항식)
         M       : x_start < x < x_end 에서의 M(x) [kN·m]
+        theta   : 처짐각 θ(x) [rad], 시계 + (EI 를 넣지 않았으면 None)
+        delta   : 처짐 δ(x) [m], 아래 + (EI 를 넣지 않았으면 None)
 
+    처짐·처짐각은 집중하중 위치에서도 연속이므로 좌우 구분이 필요 없다.
     구간 끝점에서 집중하중이 있으면 V 가 불연속(점프)이므로,
     끝점 값은 "그 구간 쪽에서 다가간 값(한쪽 극한)"으로 해석한다.
     """
@@ -56,6 +59,8 @@ class Segment:
     x_end: sp.Expr
     V: sp.Expr
     M: sp.Expr
+    theta: sp.Expr | None = None
+    delta: sp.Expr | None = None
 
 
 def boundaries(beam: Beam) -> list[sp.Rational]:
@@ -132,7 +137,11 @@ def split_segments(result: SolverResult) -> list[Segment]:
         x_mid = (x1 + x2) / 2
         V = singularity_to_poly(result.V, x, x_mid)
         M = singularity_to_poly(result.M, x, x_mid)
-        segments.append(Segment(x_start=x1, x_end=x2, V=V, M=M))
+        theta = delta = None
+        if result.delta is not None:  # E, I 를 넣은 경우에만
+            theta = singularity_to_poly(result.theta, x, x_mid)
+            delta = singularity_to_poly(result.delta, x, x_mid)
+        segments.append(Segment(x_start=x1, x_end=x2, V=V, M=M, theta=theta, delta=delta))
     return segments
 
 
@@ -174,3 +183,22 @@ def value_at(
         # 보 양 끝에서 반대쪽 극한을 요청한 경우(예: x=L 의 오른쪽)는 가장 가까운 구간 사용
         chosen = segments[-1] if xv >= segments[-1].x_end else segments[0]
     return chosen.V.subs(x, xv), chosen.M.subs(x, xv)
+
+
+def deflection_at(segments: list[Segment], x: sp.Symbol, xv: float | sp.Expr) -> tuple[sp.Expr, sp.Expr]:
+    """
+    위치 xv 의 (처짐각 θ [rad], 처짐 δ [m]) 를 구한다. EI 가 없으면 ValueError.
+
+    θ, δ 는 보 전체에서 연속이므로 경계 위의 점이라도 좌우 어느 구간 식을 써도 같다.
+
+    예: 캔틸레버(왼쪽 고정) 자유단 → deflection_at(segs, x, L) = (wL³/6EI, wL⁴/8EI)
+    """
+    if segments[0].delta is None:
+        raise ValueError("E, I 가 없어 처짐을 계산하지 않았습니다.")
+    seg = segments[0]
+    xv = exact(xv) if not isinstance(xv, sp.Basic) else xv
+    for s in segments:
+        if s.x_start <= xv <= s.x_end:
+            seg = s
+            break
+    return seg.theta.subs(x, xv), seg.delta.subs(x, xv)

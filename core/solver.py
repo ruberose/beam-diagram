@@ -10,6 +10,8 @@ solver.py — SymPy Beam 으로 반력과 V(x), M(x) 를 구한다
     - 이 파일을 부르는 곳: piecewise.py(결과 사용), demo.py, tests/, (나중에) web/bridge.py
     - 이 파일이 부르는 곳: model.py(입력 형식), sign.py(부호 변환), sympy
 
+[Phase 5A] E, I 가 입력되면 처짐각 θ(x), 처짐 δ(x) 도 SymPy 로 구한다 (부호는 sign.py).
+
 [특이함수(맥컬리 괄호) 간단 정리]
     ⟨x − a⟩ⁿ =  0          (x < a)
                (x − a)ⁿ    (x ≥ a),  n ≥ 0
@@ -76,6 +78,9 @@ class SolverResult:
         V         : 실무 전단력 식 V(x) [kN] (특이함수 포함)
         M         : 실무 휨모멘트 식 M(x) [kN·m] (특이함수 포함)
         warnings  : 경고 메시지 목록
+        EI        : 휨강성 [kN·m²] (E, I 를 넣지 않았으면 None)
+        theta     : 실무 처짐각 식 θ(x) [rad], 시계 + (EI 없으면 None)
+        delta     : 실무 처짐 식 δ(x) [m], 아래 + (EI 없으면 None)
     """
 
     beam: Beam
@@ -85,6 +90,9 @@ class SolverResult:
     V: sp.Expr
     M: sp.Expr
     warnings: list[str]
+    EI: sp.Expr | None = None
+    theta: sp.Expr | None = None
+    delta: sp.Expr | None = None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -100,6 +108,22 @@ def exact(value: float | int | str) -> sp.Rational:
     예: exact(0.1) → 1/10,  exact(2.5) → 5/2
     """
     return sp.Rational(str(value))
+
+
+def stiffness_EI(beam: Beam) -> sp.Rational | None:
+    """
+    E [MPa], I [mm⁴] → 휨강성 EI [kN·m²] (정확한 분수). E, I 가 없으면 None.
+
+    단위 환산 (고정식):
+        1 MPa = 1 N/mm² = 10⁶ N/m² = 10³ kN/m²
+        1 mm⁴ = (10⁻³ m)⁴ = 10⁻¹² m⁴
+        EI [kN·m²] = E·10³ × I·10⁻¹² = E × I × 10⁻⁹
+
+    예: stiffness_EI(Beam(..., E=205000, I=1.2e8)) → 24600
+    """
+    if not beam.has_stiffness():
+        return None
+    return exact(beam.E) * exact(beam.I) / sp.Integer(10) ** 9
 
 
 def support_labels(supports: list[Support]) -> list[tuple[str, Support]]:
@@ -182,9 +206,14 @@ def solve(beam: Beam) -> SolverResult:
     L = exact(beam.L)
 
     # ── 2단계: SymPy 보 만들기 ──
-    # E, I 는 처짐 계산에만 쓰이므로 Phase 1 에서는 기호로만 둔다.
-    E, I = sp.symbols("E I", positive=True)
-    b = SympyBeam(L, E, I)
+    # SymPy Beam(길이, E, I) 는 처짐 계산에 E·I 를 쓴다. 우리는 단위를 맞춘 EI [kN·m²] 를
+    # E 자리에, 1 을 I 자리에 넣는다 (곱 EI 만 의미가 있으므로).
+    # EI 가 없으면 반력·V·M 에는 영향이 없으므로 기호로 둔다.
+    EI = stiffness_EI(beam)
+    if EI is not None:
+        b = SympyBeam(L, EI, 1)
+    else:
+        b = SympyBeam(L, sp.Symbol("EI", positive=True), 1)
     x = b.variable
 
     # ── 3단계: 미지 반력을 특이함수 항으로 추가 ──
@@ -239,6 +268,14 @@ def solve(beam: Beam) -> SolverResult:
     V = sign.from_sympy_shear(b.shear_force().subs(solved))
     M = sign.from_sympy_moment(b.bending_moment().subs(solved))
 
+    # ── 7단계: 처짐 (EI 가 있을 때만) ──
+    # SymPy 는 3단계에서 넣은 경계조건(지점 δ = 0, 고정단 θ = 0)으로 적분상수를 정한다.
+    theta = delta = None
+    if EI is not None:
+        theta = sign.from_sympy_slope(b.slope().subs(solved))
+        delta = sign.from_sympy_deflection(b.deflection().subs(solved))
+
     return SolverResult(
-        beam=beam, L=L, x=x, reactions=reactions, V=V, M=M, warnings=warnings
+        beam=beam, L=L, x=x, reactions=reactions, V=V, M=M, warnings=warnings,
+        EI=EI, theta=theta, delta=delta,
     )

@@ -15,14 +15,18 @@ sign.py — SymPy 부호 규약 ↔ 실무 부호 규약 변환 (이 파일에�
     - 하중 P, w     : 아래 +
     - 모멘트 하중   : 시계방향 +
     - 반력 R        : 위 +
-    - 반력 모멘트   : 시계방향 + (모멘트 하중과 같은 규칙)  ※ 사용자 확인 필요 항목
+    - 반력 모멘트   : 시계방향 + (모멘트 하중과 같은 규칙, 사용자 확정)
     - 전단력 V      : 단면 왼쪽 부분이 위로 밀리면 +  (단순보 등분포 왼쪽 끝 V = +wL/2)
     - 휨모멘트 M    : 하부 인장 +                     (단순보 등분포 중앙 M = +wL²/8)
+    - 처짐 δ        : 아래 +                          (단순보 등분포 중앙 δ = +5wL⁴/384EI)
+    - 처짐각 θ      : 시계방향 + (= dδ/dx)            (단순보 등분포 왼쪽 지점 θ = +wL³/24EI)
 
 [보정 방법 — 손계산 답을 아는 보 두 개를 SymPy로 푼다]
     보정용 보 1: 단순보 L=4, 중앙에 하중 1 (SymPy 값 +1 로 입력)
         실무 답: V(1) = +P/2 = +0.5,  M(2) = +PL/4 = +1
         → SymPy 결과 부호가 같으면 계수 +1, 반대면 −1.
+        같은 보(EI = 1)로 처짐·처짐각도 확인한다:
+        실무 답: δ(2) = +PL³/48EI = +4/3,  θ(1) = +P(L² − 4x²)/16EI = +3/4
     보정용 보 2: 단순보 L=4, 왼쪽 끝에 모멘트 하중 1 (SymPy 값 +1 로 입력)
         실무 답(시계방향 M₀ 일 때): M(x) = M₀·(1 − x/L) → M(1) = +0.75
         → (실무로 바꾼) M(1)이 +이면 SymPy +1 은 시계방향, −이면 반시계방향.
@@ -34,8 +38,8 @@ sign.py — SymPy 부호 규약 ↔ 실무 부호 규약 변환 (이 파일에�
     V·M 의 부호만 보정용 보로 확인하면 된다.
 
 [SymPy 1.14.0 에서 측정한 결과] (README 에도 기록)
-    shear = +1, moment = +1, moment_load = −1
-    즉 V·M 은 실무 규약과 같고, SymPy 모멘트 하중 + 는 반시계방향이다.
+    shear = +1, moment = +1, moment_load = −1, deflection = +1, slope = +1
+    즉 V·M·δ·θ 는 실무 규약과 같고, SymPy 모멘트 하중 + 는 반시계방향이다.
 
 [Python 문법 메모]
     - @lru_cache(maxsize=1)
@@ -64,12 +68,16 @@ class SignFactors:
         shear       : SymPy V → 실무 V 계수
         moment      : SymPy M → 실무 M 계수
         moment_load : 실무 모멘트 하중(시계 +) → SymPy 모멘트 하중 값 계수
+        deflection  : SymPy 처짐 → 실무 처짐(아래 +) 계수
+        slope       : SymPy 처짐각 → 실무 처짐각(시계 +) 계수
     """
 
     load: int
     shear: int
     moment: int
     moment_load: int
+    deflection: int
+    slope: int
 
 
 def _sign_of(value: sp.Expr) -> int:
@@ -81,10 +89,12 @@ def _sign_of(value: sp.Expr) -> int:
 
 
 def _calibration_beam(L: int) -> tuple[SympyBeam, sp.Symbol, sp.Symbol]:
-    """보정용 단순보(핀 x=0, 롤러 x=L)를 만들고, 반력 미지수 두 개를 함께 돌려준다."""
-    E, I = sp.symbols("E I", positive=True)  # 처짐은 안 쓰므로 기호로 둔다
+    """
+    보정용 단순보(핀 x=0, 롤러 x=L)를 만들고, 반력 미지수 두 개를 함께 돌려준다.
+    E = 1, I = 1 (EI = 1) 로 두어 처짐 값이 PL³/48 처럼 바로 비교되게 한다.
+    """
     R1, R2 = sp.symbols("R1 R2")
-    b = SympyBeam(L, E, I)
+    b = SympyBeam(L, 1, 1)
     # order=-1 : 집중력 (특이함수 ⟨x−a⟩⁻¹)
     b.apply_load(R1, 0, -1)
     b.apply_load(R2, L, -1)
@@ -119,6 +129,14 @@ def get_factors() -> SignFactors:
     shear_factor = _sign_of(V_s)    # 실무 V(1) = +0.5
     moment_factor = _sign_of(M_s)   # 실무 M(2) = +1.0
 
+    # 같은 보의 처짐(중앙)·처짐각(x=1) — 경계조건 δ(0) = δ(L) = 0 은 _calibration_beam 에서 넣었다
+    d_s = b.deflection().subs(b.reaction_loads).subs(x, 2)
+    t_s = b.slope().subs(b.reaction_loads).subs(x, 1)
+    if sp.Abs(d_s) != sp.Rational(4, 3) or sp.Abs(t_s) != sp.Rational(3, 4):
+        raise RuntimeError(f"부호 보정 실패: 처짐 크기가 예상과 다름 (δ={d_s}, θ={t_s}).")
+    deflection_factor = _sign_of(d_s)  # 실무 δ(2) = +4/3 (아래로 처짐)
+    slope_factor = _sign_of(t_s)       # 실무 θ(1) = +3/4 (시계방향 회전)
+
     # ── 보정 2: 왼쪽 끝 모멘트 하중 → 모멘트 하중 방향 ──
     b, R1, R2 = _calibration_beam(L)
     b.apply_load(1, 0, -2)  # order=-2 : 집중 모멘트 (특이함수 ⟨x−a⟩⁻²)
@@ -135,6 +153,8 @@ def get_factors() -> SignFactors:
         shear=shear_factor,
         moment=moment_factor,
         moment_load=moment_load_factor,
+        deflection=deflection_factor,
+        slope=slope_factor,
     )
 
 
@@ -181,3 +201,13 @@ def from_sympy_shear(V_sympy: sp.Expr) -> sp.Expr:
 def from_sympy_moment(M_sympy: sp.Expr) -> sp.Expr:
     """SymPy 휨모멘트 식 → 실무 휨모멘트 식 (하부 인장 +)."""
     return get_factors().moment * M_sympy
+
+
+def from_sympy_deflection(d_sympy: sp.Expr) -> sp.Expr:
+    """SymPy 처짐 식 → 실무 처짐 식 (아래 +, m)."""
+    return get_factors().deflection * d_sympy
+
+
+def from_sympy_slope(t_sympy: sp.Expr) -> sp.Expr:
+    """SymPy 처짐각 식 → 실무 처짐각 식 (시계 +, rad)."""
+    return get_factors().slope * t_sympy

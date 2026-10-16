@@ -56,6 +56,9 @@ const DEFAULT_INPUT = {
     { type: "udl", w: 10, x_start: 0, x_end: 4 },
     { type: "point", P: 20, x: 8 },
   ],
+  E: 205000,   // MPa (강재)
+  I: 1.2e8,    // mm⁴
+  defl_n: 360,
 };
 
 // 전역 상태
@@ -110,7 +113,7 @@ async function startPython() {
     const info = JSON.parse(bridge.engine_info());
     const f = info.factors;
     $("#engine").textContent =
-      `SymPy ${info.sympy} · 부호 보정 V×${f.shear} M×${f.moment} 모멘트하중×${f.moment_load}`;
+      `SymPy ${info.sympy} · 부호 보정 V×${f.shear} M×${f.moment} 모멘트하중×${f.moment_load} δ×${f.deflection} θ×${f.slope}`;
 
     $("#loading").hidden = true;
     $("#calc").disabled = false;
@@ -209,12 +212,24 @@ function collectInput() {
       x: row.querySelector(".x").value === "" ? "" : Number(row.querySelector(".x").value),
     })),
     loads: [...$("#loads").children].map(readLoadRow),
+    // 처짐용 (선택): 비어 있으면 "" 로 보내고 bridge.py 가 '입력 없음'으로 처리한다
+    E: numOrEmpty($("#E").value),
+    I: numOrEmpty($("#I").value),
+    defl_n: numOrEmpty($("#defl-n").value),
   };
+}
+
+/** 입력칸 문자열 → 숫자, 비었으면 "" */
+function numOrEmpty(v) {
+  return v === "" ? "" : Number(v);
 }
 
 /** 입력 객체를 화면에 채운다. */
 function applyInput(data) {
   $("#span").value = data.L ?? "";
+  $("#E").value = data.E ?? "";
+  $("#I").value = data.I ?? "";
+  $("#defl-n").value = data.defl_n ?? "";
   $("#supports").replaceChildren();
   $("#loads").replaceChildren();
   (data.supports || []).forEach(addSupportRow);
@@ -294,8 +309,9 @@ function render() {
 // ─────────────────────────────────────────────────────────────
 // 4. 그래프 (Plotly) — 한 그림 안에 3단: 위 보 그림 / 가운데 SFD / 아래 BMD
 //    세 단이 x축 하나("x")를 같이 쓰므로 위치가 정확히 정렬된다.
+//    E, I 를 넣으면 맨 아래에 처짐도(4단째, y4 축)가 추가된다.
 // ─────────────────────────────────────────────────────────────
-const COLOR = { beam: "#37474f", V: "#1f6feb", M: "#d84315", load: "#6a1b9a", support: "#455a64" };
+const COLOR = { beam: "#37474f", V: "#1f6feb", M: "#d84315", D: "#2e7d32", load: "#6a1b9a", support: "#455a64" };
 
 function renderPlot(res, input) {
   const L = res.L;
@@ -319,6 +335,34 @@ function renderPlot(res, input) {
   const labels = valueLabels(res, bmdDown);
   traces.push(...labels.markers); // ...배열 : 배열 원소를 하나씩 풀어서 넣는다
 
+  // ── 처짐도 (E, I 가 있을 때만) ── 값은 m 로 오므로 mm 로 바꿔 그린다.
+  const defl = res.deflection;
+  const hasDefl = !!defl && !!d.delta; // !! : 값을 true/false 로 바꾼다
+  $("#plot").classList.toggle("with-deflection", hasDefl);
+  if (hasDefl) {
+    traces.push({
+      x: d.x, y: d.delta.map((v) => v * 1000), yaxis: "y4", name: "δ", type: "scatter", mode: "lines",
+      line: { color: COLOR.D, width: 2 }, fill: "tozeroy", fillcolor: "rgba(46,125,50,0.10)",
+      customdata: d.theta, // 마우스를 올렸을 때 처짐각도 함께 보여준다
+      hovertemplate: "x = %{x:.2f} m<br>δ = %{y:.2f} mm<br>θ = %{customdata:.5f} rad<extra></extra>",
+    });
+    // 최대 처짐(아래)·최대 솟음(위) 라벨
+    for (const v of [defl.delta_down, defl.delta_up]) {
+      if (!v) continue;
+      const ymm = v.value * 1000;
+      labels.annotations.push({ xref: "x", yref: "y4", x: v.x, y: ymm,
+        text: `δ ${fmt(ymm)} mm<br>x=${fmt(v.x)}`, showarrow: true, arrowhead: 0, arrowwidth: 1,
+        arrowcolor: "#777", ax: 0, ay: ymm > 0 ? 26 : -26, // 아래 처짐은 아래쪽에 라벨 (축이 뒤집혀 있음)
+        font: { size: 11 }, bgcolor: "rgba(255,255,255,0.85)" });
+      traces.push({ x: [v.x], y: [ymm], yaxis: "y4", type: "scatter", mode: "markers",
+        hoverinfo: "skip", marker: { size: 6, color: "#222" } });
+    }
+  }
+  // 단 배치 (아래에서 위로): [처짐] → BMD → SFD → 보 그림
+  const dom = hasDefl
+    ? { y4: [0, 0.22], M: [0.29, 0.52], V: [0.59, 0.79], beam: [0.84, 1] }
+    : { M: [0, 0.37], V: [0.44, 0.75], beam: [0.80, 1] };
+
   const layout = {
     margin: { l: 64, r: 16, t: 12, b: 44 },
     showlegend: false,
@@ -326,21 +370,27 @@ function renderPlot(res, input) {
     dragmode: false, // 아이패드에서 그래프를 끌어도 화면 스크롤이 되게 확대·이동 끔
     xaxis: {
       range: [-0.04 * L, 1.04 * L], title: { text: "x (m)" },
+      anchor: hasDefl ? "y4" : "y", // x축 눈금은 맨 아래 단 밑에
       zeroline: false, showspikes: true, spikemode: "across", spikethickness: 1,
       spikedash: "dot", spikecolor: "#888",
     },
     // 아래 BMD
     yaxis: {
-      domain: [0, 0.37], title: { text: "M (kN·m)" }, zeroline: true, zerolinecolor: "#999",
+      domain: dom.M, title: { text: "M (kN·m)" }, zeroline: true, zerolinecolor: "#999",
       autorange: bmdDown ? "reversed" : true,
     },
     // 가운데 SFD
-    yaxis2: { domain: [0.44, 0.75], title: { text: "V (kN)" }, zeroline: true, zerolinecolor: "#999" },
+    yaxis2: { domain: dom.V, title: { text: "V (kN)" }, zeroline: true, zerolinecolor: "#999" },
     // 위 보 그림 (숫자 눈금 없음)
     yaxis3: {
-      domain: [0.80, 1], range: [-2.1, 2.1], showticklabels: false, showgrid: false,
+      domain: dom.beam, range: [-2.1, 2.1], showticklabels: false, showgrid: false,
       zeroline: false, fixedrange: true,
     },
+    // 맨 아래 처짐도: 아래 처짐(+)이 축 아래로 보이도록 뒤집는다 (지시서 D2)
+    ...(hasDefl ? { yaxis4: {
+      domain: dom.y4, title: { text: "δ (mm)" }, zeroline: true, zerolinecolor: "#999",
+      autorange: "reversed",
+    } } : {}),
     shapes: beam.shapes,
     annotations: [...beam.annotations, ...labels.annotations],
   };
@@ -537,6 +587,20 @@ function renderSummary(res) {
       <td class="num">M = ${fmt(z.M)} kN·m</td><td class="num">${fmt(z.x)}</td></tr>`;
   }
   html += `</table></div>`;
+
+  // 처짐 표 (E, I 를 넣었을 때만)
+  const df = res.deflection;
+  if (df) {
+    const mmv = (v) => fmt(v * 1000);
+    html += `<h3>처짐 (δ 아래 +, EI = ${fmt(df.EI)} kN·m²)</h3><div class="table-wrap"><table>
+      <tr><th>항목</th><th class="num">값</th><th class="num">위치 x (m)</th></tr>
+      <tr><td>최대 처짐 (아래)</td><td class="num">${df.delta_down ? mmv(df.delta_down.value) + " mm" : "없음"}</td><td class="num">${at(df.delta_down)}</td></tr>
+      <tr><td>최대 솟음 (위)</td><td class="num">${df.delta_up ? mmv(df.delta_up.value) + " mm" : "없음"}</td><td class="num">${at(df.delta_up)}</td></tr>
+      <tr><td>허용처짐 L/${fmt(df.n, 0)}</td><td class="num">${mmv(df.limit)} mm</td><td class="num">—</td></tr>
+      <tr><td>판정 (|δ|max ≤ L/n)</td><td class="num">${mmv(Math.abs(df.delta_abs.value))} mm
+        <span class="${df.ok ? "ok" : "ng"}">${df.ok ? "OK" : "NG"}</span></td><td class="num">${at(df.delta_abs)}</td></tr>
+      </table></div>`;
+  }
 
   // 구간별 식 표
   html += `<h3>구간별 식</h3><div class="table-wrap"><table>

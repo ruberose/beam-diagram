@@ -7,7 +7,8 @@ steps.py — 풀이 과정(손계산 순서)을 LaTeX 문자열 목록으로 만
         2. 반력 계산      : ΣM_A = 0 → R_B,  ΣF_y = 0 → R_A  (캔틸레버는 ΣF_y, ΣM)
         3. 구간별 V, M    : 단면 왼쪽 자유물체도(FBD)로 식을 세운다
         4. 최대값         : V = 0 위치 → M 대입, 경계값 후보 비교
-        5. 특이함수 식    : ⟨x − a⟩ⁿ 형태 (화면에서는 기본 숨김)
+        5. 처짐           : 맥컬리법 (E, I 를 넣었을 때만, Phase 5A)
+        6. 특이함수 식    : ⟨x − a⟩ⁿ 형태 (화면에서는 기본 숨김)
     단계마다 "일반식 → 숫자 대입 → 결과" 순서로 쓴다.
 
     중요: 반력과 구간식은 SymPy 결과를 그대로 옮기지 않고, 하중 목록에서
@@ -38,10 +39,10 @@ from dataclasses import dataclass, field
 
 import sympy as sp
 
-from core.extremes import Extremes, ValueAt
+from core.extremes import DeflectionExtremes, Extremes, ValueAt
 from core.model import LinearLoad, MomentLoad, PointLoad, UniformLoad
-from core.piecewise import Segment
-from core.solver import SolverResult, exact
+from core.piecewise import Segment, singularity_to_poly
+from core.solver import SolverResult, exact, load_terms
 
 DIGITS = 2  # 결과값 표시 소수 자리 (지시서 5장: 기본 2자리)
 
@@ -781,9 +782,190 @@ def singularity_latex(expr: sp.Expr) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
+# 5단계: 처짐 — 맥컬리법 (Phase 5A, 지시서 D1~D4)
+# ─────────────────────────────────────────────────────────────
+SF = sp.SingularityFunction
+
+
+def sci(value: float) -> str:
+    """
+    큰 수를 'a × 10ⁿ' LaTeX 로 (단면2차모멘트 표시용).
+    예: sci(1.2e8) → "1.2 \\times 10^{8}",  sci(205000) → "205000"
+    """
+    v = float(value)
+    if v == 0 or 1e-3 <= abs(v) < 1e6:
+        return coef(v)
+    exp = int(f"{v:e}".split("e")[1])  # 지수 부분 (예: 1.2e+08 → 8)
+    mant = v / 10**exp
+    return rf"{coef(mant)} \times 10^{{{exp}}}"
+
+
+def mm(value_m: sp.Expr) -> str:
+    """처짐 [m] → mm 문자열 (소수 2자리). 예: 0.00686 → '6.86'"""
+    return num(float(value_m) * 1000)
+
+
+def macaulay_moment(result: SolverResult, hand: dict) -> sp.Expr:
+    """
+    손계산 반력과 하중 목록으로 휨모멘트를 특이함수 식 하나로 직접 만든다.
+
+    구조역학적 의미 (단면 왼쪽 자유물체도를 보 전체에 대해 한 식으로):
+        반력 R (위)            : + R⟨x − a⟩¹
+        반력 모멘트 M_A (시계) : + M_A⟨x − a⟩⁰
+        모멘트 하중 M₀ (시계)  : + M₀⟨x − a⟩⁰
+        하중 세기 q⟨x − a⟩ⁿ (아래): − q⟨x − a⟩ⁿ⁺² / (n+2)!
+            집중하중 (n=−1): −P⟨x − a⟩¹,  등분포 (n=0): −w⟨x − a⟩²/2,  선형 (n=1): −s⟨x − a⟩³/6
+    """
+    x = result.x
+    M = sp.Integer(0)
+    for r in result.reactions:
+        R, M_r = hand[r.label]
+        M += R * SF(x, r.x, 1)
+        if M_r is not None:
+            M += M_r * SF(x, r.x, 0)
+    for load in result.beam.loads:
+        for kind, value, start, order in load_terms(load, result.L):
+            if kind == "moment":
+                M += value * SF(x, start, 0)
+            else:
+                M -= value * SF(x, start, order + 2) / sp.factorial(order + 2)
+    return M
+
+
+def integrate_sf(expr: sp.Expr) -> sp.Expr:
+    """
+    특이함수 식을 적분한다 (적분상수 없이):  ∫⟨x − a⟩ⁿ dx = ⟨x − a⟩ⁿ⁺¹ / (n + 1)   (n ≥ 0)
+
+    특이함수의 적분은 x < a 에서 0 이 되도록 정의되므로 이 규칙 하나로 보 전체에서 성립한다.
+    그래서 맥컬리법은 구간 수와 관계없이 적분상수가 2개뿐이다.
+    """
+    out = sp.Integer(0)
+    for term in sp.Add.make_args(sp.expand(expr)):
+        if term == 0:
+            continue
+        c, f = term.as_coeff_Mul()
+        if not isinstance(f, SF):
+            raise ValueError(f"특이함수가 아닌 항은 적분할 수 없습니다: {term}")
+        var, a, n = f.args
+        if n < 0:
+            raise ValueError("음의 차수 특이함수는 M(x) 에 나오지 않아야 합니다.")
+        out += c * SF(var, a, n + 1) / (n + 1)
+    return out
+
+
+def _deflection_lines(
+    result: SolverResult, hand: dict, segments: list[Segment], dext: DeflectionExtremes
+) -> tuple[list[StepLine], list[str]]:
+    """
+    맥컬리법 처짐 풀이.
+
+        EI·δ''(x) = −M(x)          (δ 아래 +, θ = dδ/dx 시계 +)
+        EI·θ(x)  = −∫M dx + C₁
+        EI·δ(x)  = −∬M dx + C₁x + C₂
+        경계조건(지점 δ = 0, 고정단 θ = 0) → C₁, C₂ → θ = 0 위치 → δ_max → 허용처짐 판정
+
+    손으로 만든 δ(x) 를 SymPy δ(x) 와 구간마다 비교해서 다르면 경고를 낸다.
+    """
+    x = result.x
+    beam = result.beam
+    EI = result.EI
+    lines: list[StepLine] = []
+    warnings: list[str] = []
+    C1, C2 = sp.symbols("C_1 C_2")
+
+    # ── (1) 강성 환산 (지시서 D1) ──
+    lines.append(StepLine(
+        rf"EI = E \times I \times 10^{{-9}} = {sci(beam.E)} \times {sci(beam.I)} \times 10^{{-9}} = {num(EI)}\ \text{{kN}}\cdot\text{{m}}^2",
+        "휨강성 (E [MPa] × I [mm⁴] → EI [kN·m²]: 1 MPa = 10³ kN/m², 1 mm⁴ = 10⁻¹² m⁴)",
+    ))
+
+    # ── (2) 기본식과 M(x) ──
+    M_hand = macaulay_moment(result, hand)
+    lines.append(StepLine(
+        r"EI\,\delta''(x) = -M(x)",
+        "기본식 (처짐 δ 아래 +, 처짐각 θ = dδ/dx 시계 +)",
+    ))
+    lines.append(StepLine(rf"M(x) = {singularity_latex(M_hand)}", "휨모멘트 (특이함수 식, 2단계 반력 사용)"))
+
+    # ── (3) 두 번 적분 ──
+    EI_theta_0 = -integrate_sf(M_hand)  # 적분상수를 뺀 부분
+    EI_delta_0 = integrate_sf(EI_theta_0)
+    lines.append(StepLine(rf"EI\,\theta(x) = {singularity_latex(EI_theta_0)} + C_1", "1회 적분"))
+    lines.append(StepLine(rf"EI\,\delta(x) = {singularity_latex(EI_delta_0)} + C_1 x + C_2", "2회 적분"))
+
+    # ── (4) 경계조건 → C₁, C₂ ──
+    if beam.kind() == "cantilever":
+        xf = result.reactions[0].x
+        bcs = [("theta", xf), ("delta", xf)]
+        bc_text = "경계조건: 고정단의 처짐각 = 0, 처짐 = 0"
+    else:
+        bcs = [("delta", r.x) for r in result.reactions]
+        bc_text = "경계조건: 두 지점의 처짐 = 0"
+    lines.append(StepLine("", bc_text))
+    eqs = []
+    for what, x0 in bcs:
+        if what == "theta":
+            known = EI_theta_0.subs(x, x0)
+            eqs.append(known + C1)
+            lines.append(StepLine(rf"\theta({num(x0)}) = 0:\quad {num(known)} + C_1 = 0"))
+        else:
+            known = EI_delta_0.subs(x, x0)
+            eqs.append(known + C1 * x0 + C2)
+            lines.append(StepLine(rf"\delta({num(x0)}) = 0:\quad {num(known)} + {num(x0)}\,C_1 + C_2 = 0"))
+    sol = sp.solve(eqs, [C1, C2], dict=True)[0]  # dict=True : [{C_1: 값, C_2: 값}] 형태로 받는다
+    c1, c2 = sol[C1], sol[C2]
+    lines.append(StepLine(
+        rf"C_1 = {num(c1)}\ \text{{kN}}\cdot\text{{m}}^2,\quad C_2 = {num(c2)}\ \text{{kN}}\cdot\text{{m}}^3"
+    ))
+
+    # ── 검증: 손계산 δ(x) = SymPy δ(x) ? (구간별 다항식으로 비교) ──
+    delta_hand = (EI_delta_0 + c1 * x + c2) / EI
+    for i, seg in enumerate(segments):
+        x_mid = (seg.x_start + seg.x_end) / 2
+        if sp.expand(singularity_to_poly(delta_hand, x, x_mid) - seg.delta) != 0:
+            warnings.append(f"구간 {i + 1} 의 처짐 풀이 식이 SymPy 결과와 다릅니다.")
+            break
+
+    # ── (5) θ = 0 위치 → 처짐 극값 ──
+    for z in dext.zero_slope:
+        seg = next(s for s in segments if s.x_start < z.x < s.x_end)
+        lines.append(StepLine(
+            rf"EI\,\theta(x) = {poly_latex(seg.theta * EI, x)} = 0 \;\Rightarrow\; x = {num(z.x)}{M_UNIT}",
+            "θ(x) = 0 인 위치 (처짐 극값, 이 구간의 식)",
+        ))
+        lines.append(StepLine(
+            rf"\delta({num(z.x)}) = \frac{{EI\,\delta}}{{EI}} = \frac{{{num(z.value * EI)}}}{{{num(EI)}}}"
+            rf" = {num(z.value, 5)}\ \text{{m}} = {mm(z.value)}\ \text{{mm}}"
+        ))
+
+    d = dext.delta_abs
+    at_zero = any(z.x == d.x for z in dext.zero_slope)
+    where = "θ = 0 위치" if at_zero else "구간 끝(자유단·하중점 등)"
+    lines.append(StepLine(
+        rf"|\delta|_{{max}} = {mm(abs(d.value))}\ \text{{mm}}\quad (\delta = {mm(d.value)}\ \text{{mm}},\ x = {num(d.x)}{M_UNIT})",
+        f"최대 처짐 — {where} (후보: θ = 0 위치와 구간 끝)",
+    ))
+
+    # ── (6) 허용처짐 판정 (지시서 D4) ──
+    verdict = r"\le" if dext.ok else r">"
+    ok_text = r"\text{OK}" if dext.ok else r"\text{NG}"
+    lines.append(StepLine(
+        rf"\delta_{{allow}} = \frac{{L}}{{n}} = \frac{{{num(result.L)}}}{{{coef(dext.n)}}} = {mm(dext.limit)}\ \text{{mm}}"
+        rf"\quad\Rightarrow\quad {mm(abs(d.value))} {verdict} {mm(dext.limit)}\ \;{ok_text}",
+        "허용처짐 판정 (기준 길이 L = 보 전체 길이)",
+    ))
+    return lines, warnings
+
+
+# ─────────────────────────────────────────────────────────────
 # 메인 함수
 # ─────────────────────────────────────────────────────────────
-def build_steps(result: SolverResult, segments: list[Segment], ext: Extremes) -> StepsResult:
+def build_steps(
+    result: SolverResult,
+    segments: list[Segment],
+    ext: Extremes,
+    dext: DeflectionExtremes | None = None,
+) -> StepsResult:
     """
     풀이 과정 전체를 만든다.
 
@@ -827,6 +1009,12 @@ def build_steps(result: SolverResult, segments: list[Segment], ext: Extremes) ->
 
     # ── 4. 최대값 ──
     steps.append(Step("extremes", "4. 최대값", _extreme_lines(result, segments, ext)))
+
+    # ── 5. 처짐 (E, I 를 넣었을 때만) ──
+    if result.delta is not None and dext is not None:
+        d_lines, d_warn = _deflection_lines(result, hand, segments, dext)
+        warnings.extend(d_warn)
+        steps.append(Step("deflection", "5. 처짐 (맥컬리법)", d_lines))
 
     # ── 5. 특이함수 식 (기본 숨김) ──
     steps.append(Step(

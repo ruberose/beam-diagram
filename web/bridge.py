@@ -21,12 +21,16 @@ bridge.py — 웹(JS) ↔ 계산 엔진(core) 사이의 JSON 변환 (이 파일 
         {"type": "linear",  "w_start": 0, "w_end": 12, "x_start": 0, "x_end": 3},
         {"type": "moment",  "M": 5, "x": 3}
       ],
+      "E": 205000, "I": 1.2e8,   (선택: 처짐 계산용 E [MPa], I [mm⁴] — 둘 다 넣어야 계산)
+      "defl_n": 360,             (선택: 허용처짐 L/n 의 n, 기본 360)
       "n_points": 400            (선택: 그래프 점 개수, 기본 400)
     }
 
 [출력 JSON 형식]
     성공: {"ok": true, "reactions": [...], "diagram": {"x": [...], "V": [...], "M": [...]},
-           "segments": [...], "extremes": {...}, "steps": [...], "warnings": [...]}
+           "segments": [...], "extremes": {...}, "deflection": {...} 또는 null,
+           "steps": [...], "warnings": [...]}
+          E, I 가 있으면 diagram 에 "theta"[rad], "delta"[m] 배열도 들어간다.
     실패: {"ok": false, "error": "한국어 오류 메시지"}
     숫자는 모두 float(전체 자릿수)로 보내고, 소수 2자리 표시는 JS 에서 한다.
 
@@ -47,10 +51,10 @@ from typing import Any
 
 import sympy as sp
 
-from core.extremes import Extremes, ValueAt, find_extremes
+from core.extremes import DeflectionExtremes, Extremes, ValueAt, find_deflection_extremes, find_extremes
 from core.model import Beam, LinearLoad, Load, MomentLoad, PointLoad, Support, UniformLoad
 from core.piecewise import Segment, split_segments
-from core.solver import solve
+from core.solver import exact, solve
 from core.steps import build_steps, moment_direction_text, poly_latex
 
 
@@ -84,11 +88,23 @@ def parse_load(d: dict) -> Load:
     raise ValueError(f"알 수 없는 하중 종류입니다: {t}")
 
 
+def _optional_num(d: dict, key: str) -> float | None:
+    """선택 입력 숫자: 비어 있으면 None, 있으면 숫자로."""
+    if d.get(key) in (None, ""):
+        return None
+    return _num(d, key)
+
+
 def parse_beam(data: dict) -> Beam:
     """입력 dict 전체 → model.Beam"""
     supports = [Support(kind=s.get("kind"), x=_num(s, "x")) for s in data.get("supports", [])]
     loads = [parse_load(ld) for ld in data.get("loads", [])]
-    return Beam(L=_num(data, "L"), supports=supports, loads=loads)
+    n = _optional_num(data, "defl_n")
+    return Beam(
+        L=_num(data, "L"), supports=supports, loads=loads,
+        E=_optional_num(data, "E"), I=_optional_num(data, "I"),
+        defl_n=360.0 if n is None else n,
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -114,7 +130,26 @@ def _extremes(ext: Extremes) -> dict:
     }
 
 
-def sample_diagram(segments: list[Segment], x: sp.Symbol, ext: Extremes, n_points: int) -> dict:
+def _deflection(d: DeflectionExtremes | None, EI: sp.Expr | None) -> dict | None:
+    """처짐 결과 → dict (E, I 가 없으면 None). 처짐 값 단위는 m (화면에서 mm 로 표시)."""
+    if d is None:
+        return None
+    return {
+        "EI": float(EI),
+        "n": float(d.n),
+        "limit": float(d.limit),
+        "ok": d.ok,
+        "delta_down": _value_at(d.delta_down),
+        "delta_up": _value_at(d.delta_up),
+        "delta_abs": _value_at(d.delta_abs),
+        "zero_slope": [{"x": float(z.x), "value": float(z.value)} for z in d.zero_slope],
+    }
+
+
+def sample_diagram(
+    segments: list[Segment], x: sp.Symbol, ext: Extremes, n_points: int,
+    dext: DeflectionExtremes | None = None,
+) -> dict:
     """
     그래프용 x, V, M 배열을 만든다.
 
@@ -125,9 +160,14 @@ def sample_diagram(segments: list[Segment], x: sp.Symbol, ext: Extremes, n_point
     """
     L = float(segments[-1].x_end)
     special = [float(z.x) for z in ext.zero_shear if z.kind == "root"]
+    has_defl = segments[0].delta is not None
+    if dext is not None:
+        special += [float(z.x) for z in dext.zero_slope]  # 처짐 최대 위치도 점으로
     xs: list[float] = []
     Vs: list[float] = []
     Ms: list[float] = []
+    Ts: list[float] = []
+    Ds: list[float] = []
     for seg in segments:
         a, b = float(seg.x_start), float(seg.x_end)
         n = max(20, int(n_points * (b - a) / L))  # 구간 길이에 비례, 최소 20점
@@ -136,11 +176,21 @@ def sample_diagram(segments: list[Segment], x: sp.Symbol, ext: Extremes, n_point
         pts.sort()
         fV = sp.lambdify(x, seg.V, "math")
         fM = sp.lambdify(x, seg.M, "math")
+        if has_defl:
+            fT = sp.lambdify(x, seg.theta, "math")
+            fD = sp.lambdify(x, seg.delta, "math")
         for p in pts:
             xs.append(p)
             Vs.append(float(fV(p)))
             Ms.append(float(fM(p)))
-    return {"x": xs, "V": Vs, "M": Ms}
+            if has_defl:
+                Ts.append(float(fT(p)))
+                Ds.append(float(fD(p)))
+    out = {"x": xs, "V": Vs, "M": Ms}
+    if has_defl:
+        out["theta"] = Ts
+        out["delta"] = Ds
+    return out
 
 
 def analyze(data: dict) -> dict:
@@ -154,7 +204,10 @@ def analyze(data: dict) -> dict:
     result = solve(beam)  # 입력 오류면 여기서 ValueError
     segments = split_segments(result)
     ext = find_extremes(segments, result.x)
-    steps = build_steps(result, segments, ext)
+    dext = None
+    if result.delta is not None:  # E, I 를 넣었을 때만 처짐 최대값·판정
+        dext = find_deflection_extremes(segments, result.x, result.L, exact(beam.defl_n))
+    steps = build_steps(result, segments, ext, dext)
     x = result.x
 
     reactions = []
@@ -173,7 +226,7 @@ def analyze(data: dict) -> dict:
         "ok": True,
         "L": float(result.L),
         "reactions": reactions,
-        "diagram": sample_diagram(segments, x, ext, int(data.get("n_points", 400))),
+        "diagram": sample_diagram(segments, x, ext, int(data.get("n_points", 400)), dext),
         "segments": [
             {
                 "x_start": float(s.x_start),
@@ -184,6 +237,7 @@ def analyze(data: dict) -> dict:
             for s in segments
         ],
         "extremes": _extremes(ext),
+        "deflection": _deflection(dext, result.EI),
         "steps": [asdict(s) for s in steps.steps],
         "warnings": result.warnings + steps.warnings,
     }
@@ -202,7 +256,8 @@ def engine_info() -> str:
     f = get_factors()
     return json.dumps({
         "sympy": sp.__version__,
-        "factors": {"shear": f.shear, "moment": f.moment, "moment_load": f.moment_load},
+        "factors": {"shear": f.shear, "moment": f.moment, "moment_load": f.moment_load,
+                    "deflection": f.deflection, "slope": f.slope},
     })
 
 

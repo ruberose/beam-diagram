@@ -75,3 +75,20 @@ def test_input_errors_are_messages():
     out = call({**SIMPLE_UDL, "L": ""})
     assert out["ok"] is False and "비어" in out["error"]
     assert json.loads(bridge.run("이건 JSON 아님"))["ok"] is False
+
+
+def test_deflection_output():
+    """E, I 를 넣으면 deflection 결과와 그래프용 delta 배열이 나온다 (Phase 5A)."""
+    out = call({**SIMPLE_UDL, "E": 205000, "I": 1.2e8, "defl_n": 360})
+    d = out["deflection"]
+    assert d["EI"] == 24600.0
+    assert d["delta_down"]["x"] == 3.0
+    assert abs(d["delta_down"]["value"] - 5 * 10 * 6**4 / (384 * 24600)) < 1e-15
+    assert d["ok"] is True and abs(d["limit"] - 6 / 360) < 1e-15
+    assert len(out["diagram"]["delta"]) == len(out["diagram"]["x"])
+    assert "deflection" in [s["key"] for s in out["steps"]]
+
+
+def test_no_stiffness_no_deflection():
+    out = call({**SIMPLE_UDL, "E": "", "I": ""})
+    assert out["deflection"] is None and "delta" not in out["diagram"]

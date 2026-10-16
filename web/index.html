@@ -81,6 +81,26 @@
         <p class="hint">하중은 아래 방향 +, 모멘트는 시계방향 +</p>
       </section>
 
+      <!-- Phase 5A: 처짐 계산용 단면 강성 (선택). 비워 두면 처짐을 계산하지 않는다. -->
+      <section>
+        <h2>단면 강성 <span class="muted small-text">(처짐 계산, 선택)</span></h2>
+        <div class="grid-2">
+          <label class="field">
+            <span>E (MPa)</span>
+            <input id="E" type="number" step="any" min="0" inputmode="decimal" placeholder="예: 205000">
+          </label>
+          <label class="field">
+            <span>I (mm⁴)</span>
+            <input id="I" type="number" step="any" min="0" inputmode="decimal" placeholder="예: 1.2e8">
+          </label>
+          <label class="field">
+            <span>허용처짐 L / n 의 n</span>
+            <input id="defl-n" type="number" step="any" min="0" inputmode="decimal" placeholder="360">
+          </label>
+        </div>
+        <p class="hint">E, I를 모두 넣으면 처짐도와 δ_max, 허용처짐 판정이 추가됩니다. (EI = E × I × 10⁻⁹ kN·m²)</p>
+      </section>
+
       <button type="button" id="calc" class="primary" disabled>계산</button>
       <div id="error" class="error" hidden></div>
     </aside>
